@@ -1,5 +1,5 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useCheckoutFlow } from "./useCheckoutFlow";
 import { loadDraft, loadResult, clearAll, saveDraft, saveResult } from "../../data/checkoutStorage";
 
@@ -206,6 +206,80 @@ describe("useCheckoutFlow — submission failure resilience", () => {
 
     expect(result.current.state).toBe("CHECKOUT_SUCCESS");
     expect(loadResult(EMPLOYEE_ID, currentWorkDate())?.success).toBe(true);
+    // A 409 sent nothing new, so the recovered result must not carry a "sent to Zoho" summary of the
+    // entries typed in this session (see the integrity note in the checkout allocation report).
+    expect(loadResult(EMPLOYEE_ID, currentWorkDate())?.checkoutSummary).toBeUndefined();
+  });
+});
+
+describe("useCheckoutFlow — under-allocation and the moving session clock", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("a valid under-allocated log stays submittable as the clock advances, and submits only the entries", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-11T10:00:00.000Z"));
+    submitTimeLogs.mockResolvedValue({ success: true, submissionId: "s-under", submittedAt: "2026-09-11T10:02:00Z", entriesCreated: 1 });
+    // Fixed once, like the server's check-in time — not recomputed per render.
+    const checkedInAtMs = Date.now() - 572 * 60_000;
+    const { result } = renderHook(() =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs: checkedInAtMs }),
+    );
+
+    act(() => result.current.startCheckout());
+    act(() => result.current.confirmStartCheckout());
+    act(() => result.current.arrivedAtReception());
+    act(() => result.current.continueToTimeLog());
+    act(() =>
+      result.current.updateEntry(0, { projectId: "p1", taskId: "t1", timeSpentMinutes: 480, workDescription: "shipped" }),
+    );
+    act(() => result.current.goToReview());
+    expect(result.current.allocation.canSubmit).toBe(true);
+    expect(result.current.allocation.unallocatedMinutes).toBe(92);
+    const entriesBefore = result.current.entries;
+
+    act(() => {
+      vi.advanceTimersByTime(2 * 60_000);
+    });
+    expect(result.current.state).toBe("REVIEWING");
+    expect(result.current.allocation.canSubmit).toBe(true);
+    expect(result.current.allocation.unallocatedMinutes).toBe(94);
+    expect(result.current.entries).toEqual(entriesBefore);
+
+    await act(async () => {
+      await result.current.submit();
+    });
+    expect(result.current.state).toBe("CHECKOUT_SUCCESS");
+
+    // The request is exactly what the employee entered: one 8h entry, nothing for the other 1h 34m.
+    expect(submitTimeLogs).toHaveBeenCalledTimes(1);
+    const request = submitTimeLogs.mock.calls[0][0] as Record<string, unknown>;
+    expect(Object.keys(request).sort()).toEqual(["employeeId", "entries", "workDate"]);
+    expect(request.entries).toEqual(entriesBefore);
+
+    // What the success card will show, captured at submit and stored for a reload.
+    expect(loadResult(EMPLOYEE_ID, currentWorkDate())?.checkoutSummary).toEqual({
+      sessionMinutes: 574,
+      loggedMinutes: 480,
+      unallocatedMinutes: 94,
+      entryCount: 1,
+    });
+  });
+
+  it("an over-allocated log is not submittable", () => {
+    const { result } = renderHook(() =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs: Date.now() - 480 * 60_000 }),
+    );
+    act(() => result.current.startCheckout());
+    act(() => result.current.confirmStartCheckout());
+    act(() => result.current.arrivedAtReception());
+    act(() => result.current.continueToTimeLog());
+    act(() =>
+      result.current.updateEntry(0, { projectId: "p1", taskId: "t1", timeSpentMinutes: 540, workDescription: "x" }),
+    );
+    expect(result.current.allocation.isOverAllocated).toBe(true);
+    expect(result.current.allocation.canSubmit).toBe(false);
   });
 });
 

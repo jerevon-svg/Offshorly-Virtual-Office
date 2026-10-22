@@ -389,7 +389,7 @@ vi.mock("../../../services/zoho", () => ({
   isAlreadySubmittedError: () => false,
   zohoService: {
     getProjects: async () => [{ id: "p1", name: "Project One" }],
-    getTasks: async () => [{ id: "t1", name: "Task One" }],
+    getTasks: async () => [{ id: "t1", projectId: "p1", name: "Task One" }],
     submitTimeLogs: (...a: unknown[]) => submitTimeLogs(...(a as [])),
   },
 }));
@@ -1821,9 +1821,10 @@ describe("checkout navigation", () => {
     expect((screen.getAllByRole("textbox")[0] as HTMLTextAreaElement).value).toBe("kept");
   });
 
-  it("SUBMIT is refused until the time log actually adds up", async () => {
+  it("SUBMIT is refused until the time log is valid", async () => {
     // The guard that makes "no way out" safe during a submission: you cannot reach SUBMITTING with an
-    // unallocated log in the first place, so there is no half-filled request to abandon.
+    // invalid log (here, the blank first entry) in the first place, so there is no half-filled request to
+    // abandon. Logging LESS than the checked-in time is valid — see the next test.
     mount();
     await reachTimeLog();
     fireEvent.click(screen.getByRole("button", { name: /review log/i }));
@@ -1832,6 +1833,39 @@ describe("checkout navigation", () => {
     fireEvent.click(submit);
     expect(submitTimeLogs).not.toHaveBeenCalled();
     expect(checkOut).not.toHaveBeenCalled();
+  });
+
+  it("an UNDER-allocated log submits only its entries, and attendance checkout follows Zoho, never before", async () => {
+    checkedInAt = new Date(Date.now() - 572 * 60_000).toISOString(); // checked in 9h 32m ago
+    let attendanceBeforeZoho = false;
+    submitTimeLogs.mockImplementation(async () => {
+      attendanceBeforeZoho = checkOut.mock.calls.length > 0;
+      return { success: true, submissionId: "sub-under", entriesCreated: 1, submittedAt: new Date().toISOString() };
+    });
+    mount();
+    await reachTimeLog();
+    fireEvent.change(screen.getAllByRole("combobox")[0], { target: { value: "p1" } });
+    await screen.findByRole("option", { name: "Task One" });
+    fireEvent.change(screen.getAllByRole("combobox")[1], { target: { value: "t1" } });
+    fireEvent.change(screen.getByLabelText("Hours"), { target: { value: "8" } });
+    fireEvent.change(screen.getAllByRole("textbox")[0], { target: { value: "shipped the allocation fix" } });
+
+    const line = screen.getByTestId("allocation-line");
+    expect(line.textContent).toContain("Logged to projects: 8h 0m");
+    expect(line.textContent).toMatch(/Not logged: 1h 3\dm/);
+    expect(line.className).not.toMatch(/warn/);
+
+    fireEvent.click(screen.getByRole("button", { name: /review log/i }));
+    const submit = (await screen.findByRole("button", { name: /submit log and check out/i })) as HTMLButtonElement;
+    expect(submit.disabled).toBe(false);
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(checkOut).toHaveBeenCalledTimes(1));
+    expect(attendanceBeforeZoho).toBe(false);
+    expect(submitTimeLogs).toHaveBeenCalledTimes(1);
+    const request = (submitTimeLogs.mock.calls[0] as unknown[])[0] as { entries: { taskId: string; timeSpentMinutes: number }[] };
+    expect(request.entries).toHaveLength(1);
+    expect(request.entries[0]).toMatchObject({ taskId: "t1", timeSpentMinutes: 480 });
   });
 
   it("no screen offers an escape that the state machine does not have", async () => {

@@ -23,19 +23,27 @@ export function computeWorkedMinutes(
   return Math.max(0, Math.floor(worked));
 }
 
+// Checked-in time and project time are two different things. `sessionMinutes` is how long the employee
+// was checked in; `loggedMinutes` is the project work they report. Logging LESS than the session is
+// valid — the rest is `unallocatedMinutes`, shown but never submitted, and never classified as a break,
+// overtime, paid or unpaid time. Logging MORE than the session is blocked.
 export interface AllocationResult {
-  totalLoggedMinutes: number;
-  remainingMinutes: number;
-  isFullyAllocated: boolean;
+  sessionMinutes: number;
+  loggedMinutes: number;
+  unallocatedMinutes: number;
+  /** Logged project time exceeds the checked-in time — the one total-level error. */
+  isOverAllocated: boolean;
+  canSubmit: boolean;
   errors: string[];
 }
 
 const APPROVED_CATEGORY_SET = new Set<string>(APPROVED_CATEGORIES);
 
-// Validates a draft's entries against the worked-minutes budget for the day.
-// Per spec, entries must fully allocate the worked time (no over/under).
+// Validates a draft's entries against the checked-in time for the session. Under-allocation is valid
+// (decision A); over-allocation and every per-entry problem are not (decision C). At least one valid
+// entry is still required — a zero-hour checkout is out of scope (decision B).
 export function validateAllocation(
-  workedMinutes: number,
+  sessionMinutes: number,
   entries: TimeLogEntry[],
 ): AllocationResult {
   const errors: string[] = [];
@@ -71,26 +79,44 @@ export function validateAllocation(
     }
   });
 
-  const totalLoggedMinutes = entries.reduce(
+  const loggedMinutes = entries.reduce(
     (sum, e) => sum + (Number.isFinite(e.timeSpentMinutes) ? e.timeSpentMinutes : 0),
     0,
   );
-  const remainingMinutes = workedMinutes - totalLoggedMinutes;
+  const unallocatedMinutes = Math.max(0, sessionMinutes - loggedMinutes);
 
-  if (totalLoggedMinutes > workedMinutes) {
+  // Only an OVER-allocation is an error. The session clock keeps ticking while the employee reviews, and
+  // a growing session can only grow the unallocated figure — it can never invalidate a log that was valid.
+  const isOverAllocated = loggedMinutes > sessionMinutes;
+  if (isOverAllocated) {
     errors.push(
-      `Logged time (${formatDuration(totalLoggedMinutes)}) exceeds worked time (${formatDuration(workedMinutes)}).`,
-    );
-  } else if (entries.length > 0 && totalLoggedMinutes !== workedMinutes) {
-    errors.push(
-      `Logged time (${formatDuration(totalLoggedMinutes)}) must fully account for worked time (${formatDuration(workedMinutes)}).`,
+      `Logged time (${formatDuration(loggedMinutes)}) exceeds your checked-in time (${formatDuration(sessionMinutes)}). Reduce an entry to continue.`,
     );
   }
 
-  const isFullyAllocated =
-    errors.length === 0 && entries.length > 0 && totalLoggedMinutes === workedMinutes;
+  const canSubmit = entries.length > 0 && errors.length === 0;
 
-  return { totalLoggedMinutes, remainingMinutes, isFullyAllocated, errors };
+  return { sessionMinutes, loggedMinutes, unallocatedMinutes, isOverAllocated, canSubmit, errors };
+}
+
+/** What a successful checkout showed the employee, captured at the moment of submission. Local display
+ *  only: it is stored beside the result in the browser and never sent anywhere. `sessionMinutes` is the
+ *  browser's checked-in time at submit — the server's attendance checkout lands a moment later and is
+ *  the authoritative record. */
+export interface CheckoutSummary {
+  sessionMinutes: number;
+  loggedMinutes: number;
+  unallocatedMinutes: number;
+  entryCount: number;
+}
+
+export function summarizeCheckout(allocation: AllocationResult, entryCount: number): CheckoutSummary {
+  return {
+    sessionMinutes: allocation.sessionMinutes,
+    loggedMinutes: allocation.loggedMinutes,
+    unallocatedMinutes: allocation.unallocatedMinutes,
+    entryCount,
+  };
 }
 
 // --- HH:MM <-> minutes -------------------------------------------------

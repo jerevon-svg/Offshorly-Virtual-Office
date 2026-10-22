@@ -19,7 +19,12 @@ import {
   saveResult,
   saveSessionStart,
 } from "../../data/checkoutStorage";
-import { computeWorkedMinutes, formatDuration, validateAllocation } from "../../data/workedTime";
+import {
+  computeWorkedMinutes,
+  formatDuration,
+  summarizeCheckout,
+  validateAllocation,
+} from "../../data/workedTime";
 import { isAlreadySubmittedError, zohoService } from "../../services/zoho";
 import type { MockSubmitOptions } from "../../services/zoho/MockZohoService";
 import type {
@@ -333,8 +338,15 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
       );
 
       if (result.success) {
-        saveResult(employeeId, workDate, result);
-        setSubmissionResult(result);
+        // The figures the employee just confirmed, captured with the result so the success card shows
+        // them — not a still-ticking clock, and not an empty entry list after a reload. Local only: the
+        // request above carried the entries and nothing else.
+        const confirmed: SubmitTimeLogsResult = {
+          ...result,
+          checkoutSummary: summarizeCheckout(allocation, entries.length),
+        };
+        saveResult(employeeId, workDate, confirmed);
+        setSubmissionResult(confirmed);
         goTo("CHECKOUT_SUCCESS");
       } else {
         saveDraft(employeeId, workDate, {

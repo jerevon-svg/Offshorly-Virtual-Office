@@ -26,6 +26,10 @@ export function CheckoutSuccessCard({ state, workedLabel, entries, submissionRes
 
   if (state !== "CHECKED_OUT") return null;
 
+  // A confirmed submission carries the figures the employee saw at submit (useCheckoutFlow). Results
+  // saved before that existed — and a duplicate-submission recovery, which sent nothing new — have no
+  // summary, and keep the original two rows rather than claiming anything was "sent".
+  const summary = submissionResult?.checkoutSummary;
   const totalLoggedMinutes = entries.reduce((sum, e) => sum + (e.timeSpentMinutes || 0), 0);
 
   return (
@@ -33,10 +37,26 @@ export function CheckoutSuccessCard({ state, workedLabel, entries, submissionRes
       <div className={styles.panel}>
         <div className={styles.title}>You're checked out! 🎉</div>
         <div className={styles.summaryGrid}>
-          <div className={styles.summaryLabel}>Worked</div>
-          <div className={styles.summaryValue}>{workedLabel}</div>
-          <div className={styles.summaryLabel}>Logged</div>
-          <div className={styles.summaryValue}>{formatDuration(totalLoggedMinutes)}</div>
+          {summary ? (
+            <>
+              <div className={styles.summaryLabel}>Checked in for</div>
+              <div className={styles.summaryValue}>{formatDuration(summary.sessionMinutes)}</div>
+              <div className={styles.summaryLabel}>Sent to Zoho Projects</div>
+              <div className={styles.summaryValue}>
+                {formatDuration(summary.loggedMinutes)} ({summary.entryCount}{" "}
+                {summary.entryCount === 1 ? "entry" : "entries"})
+              </div>
+              <div className={styles.summaryLabel}>Not logged</div>
+              <div className={styles.summaryValue}>{formatDuration(summary.unallocatedMinutes)}</div>
+            </>
+          ) : (
+            <>
+              <div className={styles.summaryLabel}>Checked in for</div>
+              <div className={styles.summaryValue}>{workedLabel}</div>
+              <div className={styles.summaryLabel}>Logged</div>
+              <div className={styles.summaryValue}>{formatDuration(totalLoggedMinutes)}</div>
+            </>
+          )}
           <div className={styles.summaryLabel}>Checkout time</div>
           <div className={styles.summaryValue}>
             {submissionResult?.submittedAt
@@ -47,6 +67,11 @@ export function CheckoutSuccessCard({ state, workedLabel, entries, submissionRes
               : "—"}
           </div>
         </div>
+        {summary && (
+          <div className={styles.note}>
+            Checked-in time is as of your submission. Only your project entries were sent to Zoho Projects.
+          </div>
+        )}
         <div className={styles.actions}>
           {onDismiss && (
             <button className={styles.primary} onClick={onDismiss}>

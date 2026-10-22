@@ -235,10 +235,25 @@ export function TimeLogForm({
         + Add another project or task
       </button>
 
-      <div className={`${styles.allocationLine} ${allocation.isFullyAllocated ? "" : styles.warn}`}>
-        Worked today: {workedLabel} · Logged to projects: {formatDuration(allocation.totalLoggedMinutes)} ·
-        Remaining: {formatDuration(allocation.remainingMinutes)}
+      {/* Under-allocation is valid and stays neutral; only logging MORE than the checked-in time warns. */}
+      <div
+        className={`${styles.allocationLine} ${allocation.isOverAllocated ? styles.warn : ""}`}
+        data-testid="allocation-line"
+      >
+        <span className={styles.allocationItem}>Checked in for: {workedLabel}</span>
+        <span className={styles.allocationItem}>
+          Logged to projects: {formatDuration(allocation.loggedMinutes)}
+        </span>
+        <span className={styles.allocationItem}>
+          Not logged: {formatDuration(allocation.unallocatedMinutes)}
+        </span>
       </div>
+      {allocation.isOverAllocated && (
+        <div className={styles.error} role="alert">
+          Logged time ({formatDuration(allocation.loggedMinutes)}) is more than your checked-in time. Reduce an
+          entry to continue.
+        </div>
+      )}
 
       <div className={styles.actions}>
         <button className={styles.primary} onClick={onContinue}>
