@@ -59,3 +59,6 @@ frontend/.halloween-shots/
 # docs/CHRISTMAS_POLISH_BACKLOG.md; the only Christmas image the product ships is
 # src/assets/experience/office-christmas.webp.
 frontend/.christmas-shots/
+
+# Personal, machine-specific Claude notes (an agent or pane to reuse, local paths). CLAUDE.md is shared; these never are.
+CLAUDE.local.md
