@@ -11,11 +11,11 @@ import {
 } from "../../data/checkoutState";
 import {
   clearAll,
-  clearDraft,
   isAlreadyCheckedOut,
   loadCompletion,
   loadDraft,
   loadRecovery,
+  loadResult,
   saveDraft,
   saveRecovery,
   saveResult,
@@ -25,9 +25,11 @@ import {
 import {
   computeWorkedMinutes,
   formatDuration,
+  needsSessionRecovery,
   summarizeCheckout,
   validateAllocation,
 } from "../../data/workedTime";
+import { AuthRedirectError } from "../../services/api/client";
 import { isAlreadySubmittedError, zohoService } from "../../services/zoho";
 import type { MockSubmitOptions } from "../../services/zoho/MockZohoService";
 import type {
@@ -67,6 +69,8 @@ export interface UseCheckoutFlowParams {
 export interface UseCheckoutFlowResult {
   state: CheckoutState;
   workedMinutes: number;
+  needsSessionRecovery: boolean;
+  finishSessionRecovery: () => void;
   workedLabel: string;
   breakMinutes: number;
   reminderVisible: boolean;
@@ -160,6 +164,9 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
     if (isAlreadyCheckedOut(employeeId, workDate)) return;
     const draft = loadDraft(employeeId, workDate);
     if (draft) {
+      const completed = loadResult(employeeId, workDate);
+      // Keep stored drafts, but do not revive entries already covered by a successful submission.
+      if (completed?.success && Date.parse(completed.submittedAt ?? "") >= Date.parse(draft.savedAt)) return;
       setEntries(draft.entries);
       if (typeof draft.breakMinutes === "number") setBreakMinutes(draft.breakMinutes);
     }
@@ -189,13 +196,15 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
     };
   }, [state, employeeId]);
 
+  const staleSession = needsSessionRecovery(timeInMs, nowMs);
+
   const workedMinutes =
     timeInMs === null ? 0 : computeWorkedMinutes(timeInMs, nowMs, breakMinutes);
 
   // 8-hour worked-time reminder trigger (spec-correct: fires once workedMinutes
   // reaches 480, not off the office day/night clock).
   useEffect(() => {
-    if (workedMinutes < 480) return;
+    if (staleSession || !Number.isFinite(workedMinutes) || workedMinutes < 480) return;
     if (state !== "IDLE") return;
     if (isAlreadyCheckedOut(employeeId, workDate)) return;
     if (laterUntilMs !== null && Date.now() < laterUntilMs) return;
@@ -208,17 +217,20 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
     if (laterUntilMs === null) {
       void announceWorkHoursReached(workDate).catch(() => {});
     }
-  }, [workedMinutes, state, employeeId, workDate, laterUntilMs]);
+  }, [staleSession, workedMinutes, state, employeeId, workDate, laterUntilMs]);
 
   // Persist draft on every entry/break change.
   useEffect(() => {
+    if (timeInMs === null || needsSessionRecovery(timeInMs)) return;
     if (entries.length === 0) return;
+    const draft = loadDraft(employeeId, workDate);
+    if (draft?.breakMinutes === breakMinutes && JSON.stringify(draft.entries) === JSON.stringify(entries)) return;
     saveDraft(employeeId, workDate, {
       entries,
       breakMinutes,
       savedAt: new Date().toISOString(),
     });
-  }, [entries, breakMinutes, employeeId, workDate]);
+  }, [entries, breakMinutes, employeeId, workDate, timeInMs]);
 
   const workedLabel = timeInMs === null ? "Not checked in yet" : formatDuration(workedMinutes);
   const allocation = validateAllocation(workedMinutes, entries);
@@ -237,7 +249,12 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
     setLaterUntilMs(Date.now() + SNOOZE_MINUTES * 60_000);
   }
 
+  function checkoutBlocked() {
+    return timeInMs === null || !Number.isFinite(timeInMs) || timeInMs > Date.now() || needsSessionRecovery(timeInMs);
+  }
+
   function startCheckout() {
+    if (checkoutBlocked()) return;
     goTo("CHECKOUT_CONFIRMATION");
   }
 
@@ -249,6 +266,7 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
   // Pass B renders the goodbye/walk visuals on its own timing and calls
   // arrivedAtReception() once the walk animation completes.
   function confirmStartCheckout() {
+    if (checkoutBlocked()) return;
     goTo("SAYING_GOODBYE");
     goTo("WALKING_TO_RECEPTION");
   }
@@ -258,6 +276,7 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
   }
 
   function continueToTimeLog() {
+    if (checkoutBlocked()) return;
     goTo("EDITING_TIME_LOG");
     if (entries.length === 0) {
       setEntries([{ ...EMPTY_ENTRY }]);
@@ -293,6 +312,7 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
   }
 
   function goToReview() {
+    if (checkoutBlocked()) return;
     goTo("REVIEWING");
   }
 
@@ -326,6 +346,10 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
   // service's internal call sites. Ignored by McpZohoService (cast below);
   // MockZohoService already declared support for this in Pass A.
   async function submit(opts?: MockSubmitOptions): Promise<void> {
+    // A stale session (main: explicit recovery for stale checked-in sessions) cannot submit at all.
+    if (checkoutBlocked()) return;
+    // Resume only a CONFIRMED checkout of this session (checkoutStorage.loadCompletion is session-aware; an
+    // unconfirmed "checked out anyway" copy is not a success and falls through to a fresh submission).
     const existing = loadCompletion(employeeId, workDate);
     if (existing?.success === true) {
       setSubmissionResult(existing);
@@ -333,6 +357,19 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
       return;
     }
 
+    const validation = validateAllocation(workedMinutes, entries);
+    // (integration: main's submit-time recheck, on Checkout V2's result — under-allocation is submittable)
+    if (!validation.canSubmit) {
+      setSubmissionResult(null);
+      setError(validation.errors.join("\n"));
+      goTo("EDITING_TIME_LOG");
+      return;
+    }
+
+    // Clear any prior attempt's result before this one starts — otherwise a
+    // stale per-entry failure list (or partial-success count) from a
+    // previous try can bleed into this attempt's panel.
+    setSubmissionResult(null);
     setError(null);
     goTo("SUBMITTING");
 
@@ -380,13 +417,15 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
         breakMinutes,
         savedAt: new Date().toISOString(),
       });
-      // V3a — A 409 IS NOT A SUCCESS. Atlas allows one submission per employee per work date and
-      // answers 409 to any other, so all it proves is that SOME submission exists for today — an
-      // earlier session's, most often — and nothing about THESE entries. It used to be shown as a
-      // success card and then drove the attendance checkout; now it is an unresolved conflict: the
-      // draft is kept, nothing is marked submitted, nothing is retried, attendance is untouched. The
-      // count Atlas sends belongs to the earlier submission, so it is deliberately not carried (the
-      // failure panel would read it as "some of yours landed").
+      // INTEGRATION DECISION (2026-10-22, flagged for review): AtlasZohoService (main) now throws
+      // AlreadySubmittedError ONLY for a prior submission Atlas reports as complete — an unconfirmed or
+      // partial 409 is already returned as a classified failure with retry advice. That proves a complete
+      // submission exists for this work date, but still not that THESE entries were saved: Atlas accepts
+      // one submission per employee per date, so on a second session it is an EARLIER session's
+      // submission (and its counts are that request's). So V3a stands — a 409 is never shown as a success:
+      // the draft is kept, nothing is marked submitted, attendance is untouched, and "Check out anyway —
+      // hours not confirmed" covers main's case of local state that drifted (cleared storage, another
+      // browser). Its count is deliberately not carried (the panel would read it as "some of yours landed").
       if (isAlreadySubmittedError(err)) {
         setSubmissionResult({ success: false, conflict: true, error: SUBMISSION_CONFLICT_MESSAGE });
         setError(SUBMISSION_CONFLICT_MESSAGE);
@@ -394,10 +433,16 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
         return;
       }
 
-      // A thrown error (network, timeout) is ambiguous — the request may or may not have landed — so
-      // it carries no result at all, and the panel warns before any manual retry.
-      setSubmissionResult(null);
-      setError(err instanceof Error ? err.message : "Submission failed.");
+      const message = err instanceof Error ? err.message : "Submission failed.";
+      setError(message);
+      // Only reached for an exception AtlasZohoService did not itself
+      // classify (e.g. AuthRedirectError, or a service that throws instead
+      // of returning a result) — kind it here so the panel isn't guessing.
+      setSubmissionResult({
+        success: false,
+        error: message,
+        kind: err instanceof AuthRedirectError ? "auth" : "unknown",
+      });
       goTo("SUBMISSION_FAILED");
     }
   }
@@ -426,6 +471,7 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
   }
 
   async function retrySubmit(opts?: MockSubmitOptions): Promise<void> {
+    if (checkoutBlocked()) return;
     goTo("REVIEWING");
     await submit(opts);
   }
@@ -459,16 +505,26 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
 
   // A confirmed attendance Check In starts a NEW work session. Any checkout
   // completed earlier today stays in storage as history (its result is not
-  // deleted) — only the live flow returns to IDLE, the stale draft is dropped
-  // so already-logged entries are not inherited, and the new-session marker
+  // deleted) — only the live flow returns to IDLE. Completed entries leave
+  // memory; stored drafts remain available after recovery. The marker
   // makes isAlreadyCheckedOut() ignore the older result. Bypasses goTo() like
   // resetToday(): it is legal from CHECKED_OUT (see checkoutState.ts) and a
   // no-op-safe reset from IDLE on an ordinary first check-in of the day.
   function beginNewSession(startedAt: string) {
+    const completed = isAlreadyCheckedOut(employeeId, workDate);
     saveSessionStart(employeeId, workDate, startedAt);
-    clearDraft(employeeId, workDate);
-    setEntries([]);
-    setBreakMinutes(0);
+    if (completed) {
+      setEntries([]);
+      setBreakMinutes(0);
+    }
+    setSubmissionResult(null);
+    setError(null);
+    setLaterUntilMs(null);
+    setState("IDLE");
+  }
+
+  function finishSessionRecovery() {
+    // Recovery is not a successful timelog: keep the draft and stored result untouched.
     setSubmissionResult(null);
     setError(null);
     setLaterUntilMs(null);
@@ -510,9 +566,11 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
   return {
     state,
     workedMinutes,
+    needsSessionRecovery: staleSession,
+    finishSessionRecovery,
     workedLabel,
     breakMinutes,
-    reminderVisible: state === "REMINDER_SHOWN",
+    reminderVisible: !staleSession && state === "REMINDER_SHOWN",
     reminderFollowUp: state === "REMINDER_SHOWN" && laterUntilMs !== null,
     projects,
     tasks,

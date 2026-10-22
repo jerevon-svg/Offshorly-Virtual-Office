@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  needsSessionRecovery,
   composeDuration,
   computeWorkedMinutes,
   formatDuration,
@@ -53,6 +54,38 @@ function entry(overrides: Partial<TimeLogEntry> = {}): TimeLogEntry {
 }
 
 describe("validateAllocation", () => {
+  it.each([1440, 1441])("caps a fully allocated entry at 1440 minutes (%d)", (minutes) => {
+    const result = validateAllocation(minutes, [
+      entry({ category: "Meetings", timeSpentMinutes: minutes, workDescription: "work" }),
+    ]);
+    expect(result.canSubmit).toBe(minutes === 1440);
+    expect(result.errors).toEqual(minutes === 1440 ? [] : [
+      "Entry 1: max 24h per entry; add another entry for the rest",
+    ]);
+  });
+
+  it("names each oversized entry", () => {
+    const result = validateAllocation(2883, [1441, 1442].map((minutes) =>
+      entry({ category: "Meetings", timeSpentMinutes: minutes, workDescription: "work" }),
+    ));
+    expect(result.errors).toEqual([
+      "Entry 1: max 24h per entry; add another entry for the rest",
+      "Entry 2: max 24h per entry; add another entry for the rest",
+    ]);
+  });
+
+  it.each([[1440, 1440, 43], [1440, 1440, 1440, 1423]])(
+    "fully allocates a multi-day session across capped entries (%j)", (...minutes) => {
+      const worked = minutes.reduce((sum, value) => sum + value, 0);
+      const result = validateAllocation(worked, minutes.map((timeSpentMinutes) =>
+        entry({ category: "Meetings", timeSpentMinutes, workDescription: "work" }),
+      ));
+      expect(result.errors).toEqual([]);
+      expect(result.canSubmit).toBe(true);
+      expect(result.unallocatedMinutes).toBe(0);
+    },
+  );
+
   it("errors when there are no entries", () => {
     const result = validateAllocation(120, []);
     expect(result.errors).toContain("Add at least one time log entry.");
@@ -210,5 +243,22 @@ describe("splitDuration / composeDuration", () => {
       const { hours, minutes } = splitDuration(total);
       expect(composeDuration(hours, minutes)).toBe(total);
     }
+  });
+});
+
+
+describe("needsSessionRecovery", () => {
+  const now = Date.parse("2026-10-10T00:00:00Z");
+  it.each([
+    [Date.parse("2026-09-25T18:55:49Z"), true],
+    [now - 86400_000, true],
+    [now - 86400_000 + 1, false],
+    [Date.parse("2026-10-09T15:00:00Z"), false],
+    [now, false], [now + 1, false], [NaN, false], [null, false],
+  ])("classifies %s as %s", (start, expected) => {
+    expect(needsSessionRecovery(start, now)).toBe(expected);
+  });
+  it("does not cap multi-day elapsed time", () => {
+    expect(computeWorkedMinutes(now - 3 * 86400_000, now, 0)).toBe(4320);
   });
 });

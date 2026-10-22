@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { MockAttendanceService, resetMockAttendanceForTests } from "./MockAttendanceService";
 
 describe("MockAttendanceService", () => {
@@ -32,4 +32,25 @@ describe("MockAttendanceService", () => {
     expect(out.checkedOutAt).not.toBeNull();
     expect((await new MockAttendanceService().getMine(id)).status).toBe("CHECKED_OUT");
   });
+  it("recovers only the old session, then permits a separate fresh check-in", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-09-25T18:55:49Z"));
+      const service = new MockAttendanceService();
+      const old = await service.checkIn(id);
+      await expect(service.recoverStaleSession(id, old.checkedInAt!)).rejects.toThrow("not stale");
+      vi.setSystemTime(new Date("2026-10-10T00:00:00Z"));
+      const out = await service.recoverStaleSession(id, old.checkedInAt!);
+      expect(out.status).toBe("CHECKED_OUT");
+      expect(out.checkedInAt).toBe(old.checkedInAt);
+      expect(await service.recoverStaleSession(id, old.checkedInAt!)).toEqual(out);
+      const fresh = await service.checkIn(id);
+      expect(fresh.checkedInAt).toBe("2026-10-10T00:00:00.000Z");
+      await expect(service.recoverStaleSession(id, old.checkedInAt!)).rejects.toThrow("Attendance changed");
+      expect(await service.getMine(id)).toEqual(fresh);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
 });

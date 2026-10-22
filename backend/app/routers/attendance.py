@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_email
@@ -11,7 +12,7 @@ from app.realtime.state import offline_lineup, sio
 from app.repositories import attendance as attendance_repo
 from app.repositories import toucan_delegation as toucan_delegation_repo
 from app.repositories.attendance import CHECKED_IN, CHECKED_OUT
-from app.schemas.attendance import AttendanceOut
+from app.schemas.attendance import AttendanceOut, RecoverStaleIn
 from app.services.delegation_events import emit_delegation_ended
 from app.services.quests import EVENT_CHECK_IN, EVENT_CHECK_OUT, record_quest_event
 
@@ -104,3 +105,19 @@ async def _end_delegation_on_checkout(db: AsyncSession, email: str) -> None:
         )
     except Exception:  # noqa: BLE001
         logger.exception("ending the Toucan delegation at checkout failed: owner=%s", email)
+
+
+@router.post("/attendance/recover-stale", response_model=AttendanceOut)
+async def recover_stale(
+    body: RecoverStaleIn,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    email: str = Depends(get_current_email),
+) -> AttendanceOut:
+    record = await attendance_repo.recover_stale_session(db, email, body.expected_checked_in_at)
+    if record is None:
+        raise HTTPException(status_code=409, detail="Attendance changed or session is not stale. Refresh and try again.")
+    # Administrative closure only: no timelog was submitted, so no checkout quest event.
+    offline_lineup.add(record["email"])
+    await _broadcast_lineup()
+    logging.getLogger(__name__).info("Stale attendance recovered: %s -> %s", record["checked_in_at"], record["checked_out_at"])
+    return AttendanceOut.from_dict(record)

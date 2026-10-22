@@ -1,3 +1,4 @@
+import { needsSessionRecovery } from "../../data/workedTime";
 import type { AttendanceRecord, AttendanceService } from "./types";
 
 // Mock attendance for backend-less development. Persisted in localStorage
@@ -61,6 +62,15 @@ export class MockAttendanceService implements AttendanceService {
       checkedInAt: new Date().toISOString(),
       checkedOutAt: null,
     });
+  }
+
+  async recoverStaleSession(employeeId: string, expectedCheckedInAt: string): Promise<AttendanceRecord> {
+    const current = read(employeeId);
+    if (current.checkedInAt !== expectedCheckedInAt || !needsSessionRecovery(Date.parse(expectedCheckedInAt))) {
+      throw new Error("Attendance changed or session is not stale. Refresh and try again.");
+    }
+    if (current.status === "CHECKED_OUT") return current;
+    return write({ ...current, status: "CHECKED_OUT", checkedOutAt: new Date().toISOString() });
   }
 
   async checkOut(employeeId: string): Promise<AttendanceRecord> {

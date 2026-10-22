@@ -1,10 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AtlasZohoService, isAlreadySubmittedError } from "./AtlasZohoService";
 
 // apiFetch is mocked at the module boundary: these tests are about the
 // request we build and the response we interpret, not about auth plumbing.
 const apiFetch = vi.hoisted(() => vi.fn());
-vi.mock("../api/client", () => ({ apiFetch }));
+vi.mock("../api/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../api/client")>()),
+  apiFetch,
+}));
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -193,7 +196,92 @@ describe("AtlasZohoService.submitTimeLogs", () => {
     await expect(result).rejects.toThrow(/already been submitted/i);
   });
 
-  it("reports a partial failure as NOT successful", async () => {
+  it.each([
+    {},
+    null,
+    { detail: "Conflict" },
+    { detail: { submission_id: "", entries_created: 1 } },
+    { detail: { submission_id: "   ", entries_created: 1 } },
+    { detail: { submission_id: 123, entries_created: 1 } },
+    { detail: { submission_id: "vo-earlier" } },
+    { detail: { submission_id: "vo-earlier", entries_created: "1" } },
+    { detail: { submission_id: "vo-earlier", entries_created: 0 } },
+    { detail: { submission_id: "vo-earlier", entries_created: -1 } },
+    { detail: { submission_id: "vo-earlier", entries_created: 1.5 } },
+  ])("fails closed for an unconfirmed 409 body: %j", async (body) => {
+    await expect(submit(jsonResponse(body, 409))).resolves.toMatchObject({
+      success: false,
+      kind: "unknown",
+      error: expect.stringContaining("This work date was already attempted. Editing will not make it retryable until the Atlas team"),
+    });
+  });
+
+  it.each([0, 1, 2, 3])("recovers a two-entry duplicate only when all entries are confirmed (count %i)", async (entriesCreated) => {
+    const result = submit(jsonResponse({
+      detail: { submission_id: "vo-earlier", entries_created: entriesCreated },
+    }, 409), ["task-a", "task-b"].map((taskId) => ({
+      projectId: "proj-1", taskId, category: null, timeSpentMinutes: 30, workDescription: "Did work",
+    })));
+    if (entriesCreated >= 2) {
+      await expect(result).rejects.toMatchObject({
+        name: "AlreadySubmittedError", submissionId: "vo-earlier", entriesCreated,
+      });
+    } else {
+      const failure = await result;
+      expect(failure).toMatchObject({ success: false, kind: "unknown" });
+      expect(failure.error).toContain("Contact the Atlas team before retrying.");
+      expect(failure.error).toContain("clears the earlier attempt");
+      if (entriesCreated === 1) {
+        expect(failure.entriesCreated).toBe(1);
+        expect(failure.error).toContain("Only 1 of 2 entries are confirmed in Zoho.");
+      }
+    }
+  });
+
+  it.each([{}, { entries_requested: 1 }])("trusts complete status over the edited draft count: %j", async (counts) => {
+    await expect(submit(jsonResponse({
+      detail: { submission_id: "vo-earlier", entries_created: 1, status: "complete", ...counts },
+    }, 409), [ONE_ENTRY[0], ONE_ENTRY[0]])).rejects.toMatchObject({
+      name: "AlreadySubmittedError", submissionId: "vo-earlier", entriesCreated: 1,
+    });
+  });
+
+  it.each(["incomplete", "unknown"])("never recovers %s status even when the edited draft count fits", async (status) => {
+    await expect(submit(jsonResponse({
+      detail: { submission_id: "vo-earlier", entries_created: 1, entries_requested: 2, status },
+    }, 409))).resolves.toMatchObject({
+      success: false,
+      kind: "unknown",
+      error: expect.stringContaining("Couldn't confirm a completed prior submission through Atlas."),
+    });
+  });
+
+  it.each([null, "", "COMPLETE", "failed", true, 1, {}, []])("fails closed for malformed completion status: %j", async (status) => {
+    await expect(submit(jsonResponse({
+      detail: { submission_id: "vo-earlier", entries_created: 1, status },
+    }, 409))).resolves.toMatchObject({ success: false, kind: "unknown" });
+  });
+
+  it.each([null, 0, -1, 1.5, 2, "1", true])("fails closed for complete status with mismatched original count: %j", async (entriesRequested) => {
+    await expect(submit(jsonResponse({
+      detail: { submission_id: "vo-earlier", entries_created: 1, entries_requested: entriesRequested, status: "complete" },
+    }, 409))).resolves.toMatchObject({ success: false, kind: "unknown" });
+  });
+
+  it("keeps the old-server rule when status is absent, even with original-count metadata", async () => {
+    await expect(submit(jsonResponse({
+      detail: { submission_id: "vo-earlier", entries_created: 1, entries_requested: 2 },
+    }, 409))).rejects.toMatchObject({ name: "AlreadySubmittedError", entriesCreated: 1 });
+  });
+
+  it("keeps the attempted-date warning when a 409 body is not JSON", async () => {
+    const result = await submit(new Response("Conflict", { status: 409 }));
+    expect(result).toMatchObject({ success: false, kind: "unknown" });
+    expect(result.error).toContain("This work date was already attempted.");
+    expect(result.error).toContain("Contact the Atlas team before retrying.");
+  });
+
+  it("reports a partial failure as NOT successful, kind entry-rejection", async () => {
     // The regression this guards: recomputing success from entries_created
     // would render a success card for a half-logged day.
     const result = await submit(
@@ -211,12 +299,161 @@ describe("AtlasZohoService.submitTimeLogs", () => {
       { taskId: "task-b", error: "That task is not assigned to you." },
     ]);
     expect(result.error).toContain("could not be logged");
+    expect(result.kind).toBe("entry-rejection");
   });
 
-  it("returns a failure result for an unexpected HTTP error", async () => {
+  it("returns a failure result for an unexpected 5xx, kind transport", async () => {
     const result = await submit(jsonResponse({}, 500));
     expect(result.success).toBe(false);
     expect(result.error).toContain("500");
+    expect(result.kind).toBe("transport");
+  });
+
+  it("classifies a 401 as kind auth and a 422 as kind validation", async () => {
+    const auth = await submit(jsonResponse({}, 401));
+    expect(auth.kind).toBe("auth");
+
+    const validation = await submit(jsonResponse({}, 422));
+    expect(validation.kind).toBe("validation");
+  });
+
+  it("a network exception (fetch throws) returns kind transport without claiming Atlas is down", async () => {
+    apiFetch.mockRejectedValue(new TypeError("Failed to fetch"));
+    const { AtlasZohoService: Svc } = await import("./AtlasZohoService");
+    const result = await new Svc().submitTimeLogs({
+      employeeId: "me",
+      workDate: "2026-08-11",
+      entries: [
+        {
+          projectId: "proj-1",
+          taskId: "task-a",
+          category: null,
+          timeSpentMinutes: 90,
+          workDescription: "Did the thing",
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+    expect(result.kind).toBe("transport");
+    expect(result.error).not.toMatch(/down/i);
+  });
+
+  it("an aborted (timed-out) submit returns kind transport with a timeout-specific message", async () => {
+    apiFetch.mockRejectedValue(new DOMException("Aborted", "AbortError"));
+    const { AtlasZohoService: Svc } = await import("./AtlasZohoService");
+    const result = await new Svc().submitTimeLogs({
+      employeeId: "me",
+      workDate: "2026-08-11",
+      entries: [
+        {
+          projectId: "proj-1",
+          taskId: "task-a",
+          category: null,
+          timeSpentMinutes: 90,
+          workDescription: "Did the thing",
+        },
+      ],
+    });
+    expect(result.kind).toBe("transport");
+    expect(result.error).toMatch(/timed out/i);
+  });
+
+  it("passes an AbortSignal so the request can actually be cancelled on timeout", async () => {
+    await submit(
+      jsonResponse({
+        success: true,
+        submission_id: "vo-1",
+        submitted_at: "2026-08-11T10:00:00Z",
+        entries_created: 1,
+        failures: [],
+      }),
+    );
+    const init = apiFetch.mock.calls[0][1] as RequestInit;
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+});
+
+const ONE_ENTRY = [
+  {
+    projectId: "proj-1",
+    taskId: "task-a",
+    category: null,
+    timeSpentMinutes: 90,
+    workDescription: "Did the thing",
+  },
+];
+
+// The timer used to clear right after apiFetch resolved (headers in), before
+// response.json() — so a body that hung after healthy headers never timed
+// out. These use fake timers to prove the abort signal stays live through
+// BOTH phases of the request.
+describe("AtlasZohoService.submitTimeLogs — submit timeout covers headers AND body", () => {
+  beforeEach(() => {
+    apiFetch.mockReset();
+    vi.resetModules();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("stalled headers: fetch itself never settles — still times out as transport", async () => {
+    apiFetch.mockImplementation(
+      (_path: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(new DOMException("Aborted", "AbortError")),
+          );
+        }),
+    );
+    const { AtlasZohoService: Svc } = await import("./AtlasZohoService");
+    const pending = new Svc().submitTimeLogs({
+      employeeId: "me",
+      workDate: "2026-08-11",
+      entries: ONE_ENTRY as never,
+    });
+    await vi.advanceTimersByTimeAsync(15_000);
+    const result = await pending;
+    expect(result.kind).toBe("transport");
+    expect(result.error).toMatch(/timed out/i);
+  });
+
+  it("stalled body: headers arrive fine but response.json() never settles — still times out as transport", async () => {
+    apiFetch.mockImplementation((_path: string, init: RequestInit) =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener("abort", () =>
+              reject(new DOMException("Aborted", "AbortError")),
+            );
+          }),
+      } as unknown as Response),
+    );
+    const { AtlasZohoService: Svc } = await import("./AtlasZohoService");
+    const pending = new Svc().submitTimeLogs({
+      employeeId: "me",
+      workDate: "2026-08-11",
+      entries: ONE_ENTRY as never,
+    });
+    await vi.advanceTimersByTimeAsync(15_000);
+    const result = await pending;
+    expect(result.kind).toBe("transport");
+    expect(result.error).toMatch(/timed out/i);
+  });
+
+  it("a 409 read while the body is still being read is unaffected by the timeout wiring (AlreadySubmittedError still propagates)", async () => {
+    apiFetch.mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: () => Promise.resolve({ detail: { submission_id: "vo-x", entries_created: 2 } }),
+    } as unknown as Response);
+    const { AtlasZohoService: Svc } = await import("./AtlasZohoService");
+    await expect(
+      new Svc().submitTimeLogs({ employeeId: "me", workDate: "2026-08-11", entries: ONE_ENTRY as never }),
+    ).rejects.toMatchObject({ name: "AlreadySubmittedError", submissionId: "vo-x", entriesCreated: 2 });
   });
 });
 
@@ -249,6 +486,7 @@ describe("an entry Atlas's contract cannot carry is never sent", () => {
     });
     expect(apiFetch).not.toHaveBeenCalled();
     expect(result.success).toBe(false);
+    expect(result.kind).toBe("validation");
   });
 
   it("says WHICH entry and what to do about it, instead of a status code", async () => {

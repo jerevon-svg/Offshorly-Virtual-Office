@@ -164,7 +164,9 @@ describe("MissionsPanel", () => {
 
   it("refetches once the daily period rolls over while open", async () => {
     vi.mocked(fetchMyMissions).mockResolvedValue(payload());
-    render(<MissionsPanel onClose={() => {}} />);
+    await act(async () => {
+      render(<MissionsPanel onClose={() => {}} />);
+    });
     await waitFor(() => expect(screen.getByTestId("missions-daily")).toBeInTheDocument());
     expect(fetchMyMissions).toHaveBeenCalledTimes(1);
 

@@ -50,6 +50,14 @@ export class RealAttendanceService implements AttendanceService {
     return restFetch("/attendance/check-in", { method: "POST" });
   }
 
+  recoverStaleSession(_employeeId: string, expectedCheckedInAt: string): Promise<AttendanceRecord> {
+    return restFetch("/attendance/recover-stale", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expectedCheckedInAt }),
+    });
+  }
+
   checkOut(_employeeId: string): Promise<AttendanceRecord> {
     return restFetch("/attendance/check-out", { method: "POST" });
   }

@@ -36,6 +36,11 @@ export function SubmissionFailedPanel({
   // V3a — Atlas 409: it already holds a submission for this date. Retrying would only conflict again,
   // so there is no Try again here; the entries are kept for the employee to check against Zoho.
   const conflict = result?.conflict === true;
+  // "transport" and "unknown" both mean the outcome is UNCONFIRMED — the
+  // request may have reached Zoho before it failed to confirm, so a retry
+  // risks a duplicate. Never word this as "Atlas is down": a 5xx/timeout can
+  // just as easily mean missing upstream creds.
+  const outcomeUnknown = !conflict && (result?.kind === "transport" || result?.kind === "unknown");
 
   if (confirming && onCheckOutAnyway) {
     return (
@@ -69,7 +74,9 @@ export function SubmissionFailedPanel({
           {conflict
             ? "Your project hours could not be confirmed as saved"
             : partial
-              ? "Some entries reached Zoho Projects, others didn't"
+              ? "Some entries are confirmed in Zoho Projects"
+              : outcomeUnknown
+                ? "Couldn't confirm submission through Atlas"
               : "We couldn't submit your work log to Zoho Projects"}
         </div>
         <div className={styles.body}>
@@ -81,10 +88,10 @@ export function SubmissionFailedPanel({
             </>
           ) : partial ? (
             <>
-              {created} {created === 1 ? "entry" : "entries"} were logged
-              successfully. Zoho has no way to undo those, so retrying will
-              log them a second time — remove the ones that succeeded before
-              trying again.
+              {created} {created === 1 ? "entry is" : "entries are"} confirmed in Zoho.
+              Your draft is saved and you have not been checked out.
+              Contact the Atlas team to reconcile the earlier attempt before
+              retrying; editing or removing entries does not clear that attempt.
             </>
           ) : (
             <>
@@ -95,15 +102,24 @@ export function SubmissionFailedPanel({
           )}
         </div>
         {failures.length > 0 && (
-          <ul className={styles.error}>
-            {failures.map((f) => (
-              <li key={f.taskId}>
-                {f.taskId}: {f.error}
-              </li>
-            ))}
-          </ul>
+          <>
+            <div className={styles.error}>Atlas responded; these entries could not be logged.</div>
+            <ul className={styles.error}>
+              {failures.map((f) => (
+                <li key={f.taskId}>
+                  {f.taskId}: Atlas could not log this entry — {f.error}
+                </li>
+              ))}
+            </ul>
+          </>
         )}
         {failures.length === 0 && error && !conflict && <div className={styles.error}>{error}</div>}
+        {outcomeUnknown && (
+          <div className={styles.error}>
+            We can&apos;t tell whether this reached Zoho before it failed. These entries may
+            already be logged — check Zoho before trying again to avoid duplicates.
+          </div>
+        )}
         <div className={styles.actions}>
           {!conflict && (
             <button className={styles.primary} onClick={onTryAgain}>

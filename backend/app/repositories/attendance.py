@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -129,3 +130,41 @@ async def list_checked_out_emails(session: AsyncSession) -> list[str]:
         .order_by(EmployeeAttendance.checked_out_at, EmployeeAttendance.email)
     )
     return [row[0] for row in result.all()]
+
+
+async def recover_stale_session(
+    session: AsyncSession, email: str, expected_checked_in_at: datetime, *, now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Close only the named stale session; never create a row or close a replacement session."""
+    email = _normalize(email)
+    now = now or _now()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    expected = expected_checked_in_at
+    if expected.tzinfo is None:
+        expected = expected.replace(tzinfo=timezone.utc)
+    expected = expected.astimezone(timezone.utc)
+    midnight = now.astimezone(ZoneInfo("Asia/Manila")).replace(hour=0, minute=0, second=0, microsecond=0)
+    if expected > now - timedelta(hours=24) or expected >= midnight:
+        return None
+    await session.execute(
+        update(EmployeeAttendance)
+        .where(
+            EmployeeAttendance.email == email,
+            EmployeeAttendance.checked_in_at == expected,
+            EmployeeAttendance.checked_out_at.is_(None),
+            EmployeeAttendance.checked_in_at <= now - timedelta(hours=24),
+            EmployeeAttendance.checked_in_at < midnight.astimezone(timezone.utc),
+        )
+        .values(checked_out_at=now, updated_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    await session.commit()
+    session.expire_all()
+    record = await get_status(session, email)
+    actual = record["checked_in_at"]
+    if actual is not None and actual.tzinfo is None:
+        actual = actual.replace(tzinfo=timezone.utc)
+    if actual == expected and record["checked_out_at"] is not None:
+        return record
+    return None

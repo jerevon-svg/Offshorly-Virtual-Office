@@ -25,12 +25,20 @@ vi.mock("../../services/zoho", () => ({
 
 const EMPLOYEE_ID = "emp-checkout-resilience";
 
+// (Each hook below takes its check-in time ONCE, as the real app does — it is the server's fixed check-in
+// instant. Re-reading Date.now() on every render let the session shrink by a minute between filling an entry
+// and submitting it, which main's submit-time allocation recheck now — rightly — refuses.)
 async function driveToReviewing(hookResult: { current: ReturnType<typeof useCheckoutFlow> }) {
   act(() => hookResult.current.startCheckout());
   act(() => hookResult.current.confirmStartCheckout());
   act(() => hookResult.current.arrivedAtReception());
   act(() => hookResult.current.continueToTimeLog());
   await waitFor(() => expect(hookResult.current.entries.length).toBeGreaterThan(0));
+  act(() => hookResult.current.updateEntry(0, {
+    category: "Meetings",
+    timeSpentMinutes: hookResult.current.workedMinutes,
+    workDescription: "did work",
+  }));
   act(() => hookResult.current.goToReview());
   expect(hookResult.current.state).toBe("REVIEWING");
 }
@@ -54,14 +62,77 @@ function currentWorkDate(): string {
 }
 
 describe("useCheckoutFlow — submission failure resilience", () => {
+  it.each([0, 1])("an unconfirmed duplicate with %i entries keeps the full draft and does not check out", async (entriesCreated) => {
+    submitTimeLogs.mockResolvedValue({
+      success: false, kind: "unknown", entriesCreated,
+      error: "Contact the Atlas team before retrying.",
+    });
+    const timeInMs = Date.now() - 60 * 60_000;
+    const { result } = renderHook(() => useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs }));
+    await driveToReviewing(result);
+    act(() => result.current.updateEntry(0, { timeSpentMinutes: 30 }));
+    act(() => result.current.addEntry());
+    act(() => result.current.updateEntry(1, { category: "Meetings", timeSpentMinutes: 30, workDescription: "Rest of work" }));
+    await act(async () => { await result.current.submit(); });
+    expect(submitTimeLogs).toHaveBeenCalledTimes(1);
+    expect(result.current.state).toBe("SUBMISSION_FAILED");
+    expect(result.current.error).toBe("Contact the Atlas team before retrying.");
+    expect(loadDraft(EMPLOYEE_ID, currentWorkDate())?.entries).toEqual(result.current.entries);
+    expect(loadResult(EMPLOYEE_ID, currentWorkDate())).toBeNull();
+  });
+
+  it.each(["submit", "retrySubmit"] as const)("%s blocks 1441 minutes and preserves the draft", async (method) => {
+    submitTimeLogs.mockResolvedValue({ success: false, error: "network down" });
+    const timeInMs = Date.now() - 60 * 60_000;
+    const { result } = renderHook(() => useCheckoutFlow({
+      employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs,
+    }));
+    await driveToReviewing(result);
+    if (method === "retrySubmit") {
+      await act(async () => { await result.current.submit(); });
+      expect(result.current.state).toBe("SUBMISSION_FAILED");
+      expect(submitTimeLogs).toHaveBeenCalledTimes(1);
+      submitTimeLogs.mockClear();
+    }
+    act(() => result.current.updateEntry(0, { timeSpentMinutes: 1441 }));
+    const draft = loadDraft(EMPLOYEE_ID, currentWorkDate());
+    await act(async () => { await result.current[method](); });
+    expect(submitTimeLogs).not.toHaveBeenCalled();
+    expect(result.current.state).toBe("EDITING_TIME_LOG");
+    expect(result.current.error).toContain("Entry 1: max 24h per entry; add another entry for the rest");
+    expect(result.current.submissionResult).toBeNull();
+    expect(loadDraft(EMPLOYEE_ID, currentWorkDate())).toEqual(draft);
+    expect(loadResult(EMPLOYEE_ID, currentWorkDate())).toBeNull();
+  });
+
+  it("submits a fully allocated 23h43m session split into capped entries", async () => {
+    submitTimeLogs.mockResolvedValue({ success: true, entriesCreated: 4 });
+    const timeInMs = Date.now() - 1423 * 60_000;
+    const { result } = renderHook(() => useCheckoutFlow({
+      employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs,
+    }));
+    await driveToReviewing(result);
+    for (const [index, minutes] of [360, 360, 360, 343].entries()) {
+      if (index > 0) act(() => result.current.addEntry());
+      act(() => result.current.updateEntry(index, {
+        category: "Meetings", timeSpentMinutes: minutes, workDescription: "did work",
+      }));
+    }
+    await act(async () => { await result.current.submit(); });
+    expect(submitTimeLogs).toHaveBeenCalledTimes(1);
+    expect(submitTimeLogs.mock.calls[0][0].entries.map((entry: { timeSpentMinutes: number }) => entry.timeSpentMinutes))
+      .toEqual([360, 360, 360, 343]);
+    expect(result.current.state).toBe("CHECKOUT_SUCCESS");
+  });
+
   it("an HTTP-500-equivalent submit result (success:false) goes to SUBMISSION_FAILED, keeps the draft, and does NOT mark CHECKED_OUT", async () => {
     submitTimeLogs.mockResolvedValue({
       success: false,
       error: "Submission failed (HTTP 500).",
     });
 
-    const { result } = renderHook(() =>
-      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs: Date.now() - 1 * 60 * 60 * 1000 }),
+    const { result } = renderHook(((timeInMs: number) => () =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs }))(Date.now() - 1 * 60 * 60 * 1000),
     );
 
     await driveToReviewing(result);
@@ -86,8 +157,8 @@ describe("useCheckoutFlow — submission failure resilience", () => {
   it("a thrown network error on submit also lands on SUBMISSION_FAILED with the draft preserved (not CHECKED_OUT)", async () => {
     submitTimeLogs.mockRejectedValue(new Error("network down"));
 
-    const { result } = renderHook(() =>
-      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs: Date.now() - 1 * 60 * 60 * 1000 }),
+    const { result } = renderHook(((timeInMs: number) => () =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs }))(Date.now() - 1 * 60 * 60 * 1000),
     );
 
     await driveToReviewing(result);
@@ -104,8 +175,8 @@ describe("useCheckoutFlow — submission failure resilience", () => {
   it("retrySubmit is idempotent: repeated failures never fabricate success, never mark CHECKED_OUT, and each retry reissues exactly one submitTimeLogs call", async () => {
     submitTimeLogs.mockResolvedValue({ success: false, error: "Submission failed (HTTP 500)." });
 
-    const { result } = renderHook(() =>
-      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs: Date.now() - 1 * 60 * 60 * 1000 }),
+    const { result } = renderHook(((timeInMs: number) => () =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs }))(Date.now() - 1 * 60 * 60 * 1000),
     );
 
     await driveToReviewing(result);
@@ -141,8 +212,8 @@ describe("useCheckoutFlow — submission failure resilience", () => {
         failures: [],
       });
 
-    const { result } = renderHook(() =>
-      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs: Date.now() - 1 * 60 * 60 * 1000 }),
+    const { result } = renderHook(((timeInMs: number) => () =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs }))(Date.now() - 1 * 60 * 60 * 1000),
     );
 
     await driveToReviewing(result);
@@ -161,8 +232,8 @@ describe("useCheckoutFlow — submission failure resilience", () => {
   it("saveAndReturnLater (SubmissionFailedPanel's only other action besides retry) keeps the draft and returns to IDLE without resubmitting", async () => {
     submitTimeLogs.mockResolvedValue({ success: false, error: "Submission failed (HTTP 500)." });
 
-    const { result } = renderHook(() =>
-      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs: Date.now() - 1 * 60 * 60 * 1000 }),
+    const { result } = renderHook(((timeInMs: number) => () =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs }))(Date.now() - 1 * 60 * 60 * 1000),
     );
 
     await driveToReviewing(result);
@@ -184,17 +255,95 @@ describe("useCheckoutFlow — submission failure resilience", () => {
     expect(loadResult(EMPLOYEE_ID, currentWorkDate())?.success).not.toBe(true);
   });
 
-  it("a thrown network error is ambiguous: no result, no success, draft kept", async () => {
+  it("a per-entry rejection followed by a network failure shows fresh state, not the old failures list", async () => {
+    submitTimeLogs
+      .mockResolvedValueOnce({
+        success: false,
+        kind: "entry-rejection",
+        error: "1 of 1 entries could not be logged.",
+        entriesCreated: 0,
+        failures: [{ taskId: "task-a", error: "That task is not assigned to you." }],
+      })
+      .mockResolvedValueOnce({
+        success: false,
+        kind: "transport",
+        error: "Couldn't confirm submission through Atlas.",
+      });
+
+    const { result } = renderHook(((timeInMs: number) => () =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs }))(Date.now() - 1 * 60 * 60 * 1000),
+    );
+
+    await driveToReviewing(result);
+    await act(async () => {
+      await result.current.submit();
+    });
+    expect(result.current.submissionResult?.failures?.length).toBe(1);
+
+    await act(async () => {
+      await result.current.retrySubmit();
+    });
+    // Stale per-entry failure list must not survive into the new attempt's result.
+    expect(result.current.submissionResult?.failures ?? []).toEqual([]);
+    expect(result.current.submissionResult?.kind).toBe("transport");
+    expect(result.current.state).toBe("SUBMISSION_FAILED");
+    expect(result.current.state).not.toBe("CHECKOUT_SUCCESS");
+  });
+
+  it("clears the previous failures list as soon as a retry starts, not just once it resolves", async () => {
+    submitTimeLogs.mockResolvedValueOnce({
+      success: false,
+      kind: "entry-rejection",
+      entriesCreated: 0,
+      failures: [{ taskId: "task-a", error: "nope" }],
+    });
+    let resolveSecond!: (v: unknown) => void;
+    submitTimeLogs.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSecond = resolve;
+        }),
+    );
+
+    const { result } = renderHook(((timeInMs: number) => () =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs }))(Date.now() - 1 * 60 * 60 * 1000),
+    );
+
+    await driveToReviewing(result);
+    await act(async () => {
+      await result.current.submit();
+    });
+    expect(result.current.submissionResult?.failures?.length).toBe(1);
+
+    act(() => {
+      void result.current.retrySubmit();
+    });
+    // Retry is still pending (submitTimeLogs hasn't resolved yet) — the
+    // stale failures list must already be gone, not linger until resolution.
+    expect(result.current.submissionResult).toBeNull();
+    expect(result.current.state).toBe("SUBMITTING");
+
+    await act(async () => {
+      resolveSecond({ success: false, kind: "transport", error: "Couldn't confirm submission through Atlas." });
+      await Promise.resolve();
+    });
+    expect(result.current.state).toBe("SUBMISSION_FAILED");
+    expect(result.current.submissionResult?.kind).toBe("transport");
+  });
+
+  // (INTEGRATION 2026-10-22: main classifies a thrown error as kind "unknown" — still no success, nothing saved;
+  // its "a duplicate-submission is treated as success" test is superseded by the V3a block below)
+  it("a thrown network error is ambiguous: no success, classified unknown, draft kept", async () => {
     submitTimeLogs.mockRejectedValue(new Error("Failed to fetch"));
-    const { result } = renderHook(() =>
-      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs: Date.now() - 1 * 60 * 60 * 1000 }),
+    const { result } = renderHook(((timeInMs: number) => () =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs }))(Date.now() - 1 * 60 * 60 * 1000),
     );
     await driveToReviewing(result);
     await act(async () => {
       await result.current.submit();
     });
     expect(result.current.state).toBe("SUBMISSION_FAILED");
-    expect(result.current.submissionResult).toBeNull();
+    expect(result.current.submissionResult).toEqual(expect.objectContaining({ success: false, kind: "unknown" }));
     expect(loadResult(EMPLOYEE_ID, currentWorkDate())).toBeNull();
     expect(loadDraft(EMPLOYEE_ID, currentWorkDate())).not.toBeNull();
   });
@@ -256,8 +405,8 @@ describe("useCheckoutFlow — under-allocation and the moving session clock", ()
   });
 
   it("an over-allocated log is not submittable", () => {
-    const { result } = renderHook(() =>
-      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs: Date.now() - 480 * 60_000 }),
+    const { result } = renderHook(((timeInMs: number) => () =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs }))(Date.now() - 480 * 60_000),
     );
     act(() => result.current.startCheckout());
     act(() => result.current.confirmStartCheckout());
@@ -291,9 +440,9 @@ describe("useCheckoutFlow — same-day new session", () => {
     expect(result.current.state).toBe("IDLE");
     expect(result.current.submissionResult).toBeNull();
     expect(result.current.entries).toEqual([]);
-    // History preserved; stale draft dropped so already-logged entries are not inherited.
+    // History and stored draft preserved; completed entries are not inherited in memory.
     expect(loadResult(EMPLOYEE_ID, workDate)?.submissionId).toBe("session-1");
-    expect(loadDraft(EMPLOYEE_ID, workDate)).toBeNull();
+    expect(loadDraft(EMPLOYEE_ID, workDate)?.entries[0].workDescription).toBe("old");
 
     // A refresh (fresh hook) now starts the new session in IDLE, not CHECKED_OUT.
     const { result: reloaded } = renderHook(() =>
@@ -332,8 +481,8 @@ describe("useCheckoutFlow — V3a submission conflicts", () => {
   async function eveningConflict() {
     const morningAt = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
     saveResult(EMPLOYEE_ID, currentWorkDate(), { ...MORNING, submittedAt: morningAt });
-    const hook = renderHook(() =>
-      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 20, timeInMs: Date.now() - 4 * 60 * 60 * 1000 }),
+    const hook = renderHook(((timeInMs: number) => () =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 20, timeInMs }))(Date.now() - 4 * 60 * 60 * 1000),
     );
     act(() => hook.result.current.beginNewSession(new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString()));
     submitTimeLogs.mockRejectedValue(new AlreadySubmittedError());
@@ -346,8 +495,8 @@ describe("useCheckoutFlow — V3a submission conflicts", () => {
 
   it("a normal confirmed submission still succeeds", async () => {
     submitTimeLogs.mockResolvedValue({ success: true, submissionId: "s-ok", submittedAt: new Date().toISOString(), entriesCreated: 1 });
-    const { result } = renderHook(() =>
-      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs: Date.now() - 5 * 60 * 60 * 1000 }),
+    const { result } = renderHook(((timeInMs: number) => () =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs }))(Date.now() - 5 * 60 * 60 * 1000),
     );
     await reviewEveningEntry(result);
     await act(async () => {
@@ -371,8 +520,8 @@ describe("useCheckoutFlow — V3a submission conflicts", () => {
   it("after a refresh the entries are restored and the employee is still checked in", async () => {
     const first = await eveningConflict();
     first.unmount();
-    const { result } = renderHook(() =>
-      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 20, timeInMs: Date.now() - 4 * 60 * 60 * 1000 }),
+    const { result } = renderHook(((timeInMs: number) => () =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 20, timeInMs }))(Date.now() - 4 * 60 * 60 * 1000),
     );
     expect(result.current.state).toBe("IDLE");
     expect(result.current.entries[0]).toMatchObject(EVENING_ENTRY);
@@ -397,8 +546,8 @@ describe("useCheckoutFlow — V3a submission conflicts", () => {
     expect(loadResult(EMPLOYEE_ID, currentWorkDate())).toEqual({ ...MORNING, submittedAt: first.morningAt });
 
     first.unmount();
-    const { result } = renderHook(() =>
-      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 20, timeInMs: Date.now() - 4 * 60 * 60 * 1000 }),
+    const { result } = renderHook(((timeInMs: number) => () =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 20, timeInMs }))(Date.now() - 4 * 60 * 60 * 1000),
     );
     expect(result.current.state).toBe("CHECKED_OUT");
     expect(result.current.submissionResult?.hoursNotConfirmed).toBe(true);
@@ -407,11 +556,64 @@ describe("useCheckoutFlow — V3a submission conflicts", () => {
   });
 
   it("checking out anyway is only reachable from a failed submission", async () => {
-    const { result } = renderHook(() =>
-      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs: Date.now() - 60 * 60 * 1000 }),
+    const { result } = renderHook(((timeInMs: number) => () =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs }))(Date.now() - 60 * 60 * 1000),
     );
     await reviewEveningEntry(result);
     expect(() => act(() => result.current.checkOutWithoutConfirmedHours())).toThrow(/Illegal checkout state transition/);
     expect(loadRecovery(EMPLOYEE_ID, currentWorkDate())).toBeNull();
   });
+});
+
+describe("stale attendance guard", () => {
+  it("blocks review, retry and cached success without touching the draft", async () => {
+    const start = Date.now() - 15 * 86400_000;
+    const draft = { entries: Array.from({ length: 15 }, () => ({ projectId: null, taskId: null, category: "Meetings" as const, timeSpentMinutes: 1440, workDescription: "Preserve me" })), breakMinutes: 0, savedAt: "2026-10-01T00:00:00Z" };
+    saveDraft(EMPLOYEE_ID, currentWorkDate(), draft);
+    const { result, rerender } = renderHook(({ timeInMs }) => useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs }), { initialProps: { timeInMs: start as number | null } });
+    expect(result.current.needsSessionRecovery).toBe(true);
+    expect(result.current.allocation.canSubmit).toBe(true);
+    expect(result.current.reminderVisible).toBe(false);
+    act(() => result.current.goToReview());
+    expect(result.current.state).toBe("IDLE");
+    saveResult(EMPLOYEE_ID, currentWorkDate(), { success: true, submissionId: "old", entriesCreated: 1 });
+    await act(async () => { await result.current.submit(); await result.current.retrySubmit(); });
+    expect(submitTimeLogs).not.toHaveBeenCalled();
+    expect(result.current.state).toBe("IDLE");
+    expect(loadDraft(EMPLOYEE_ID, currentWorkDate())).toEqual(draft);
+    act(() => result.current.finishSessionRecovery());
+    rerender({ timeInMs: null });
+    expect(result.current.submissionResult).toBeNull();
+    expect(loadDraft(EMPLOYEE_ID, currentWorkDate())).toEqual(draft);
+    const fresh = Date.now();
+    act(() => result.current.beginNewSession(new Date(fresh).toISOString()));
+    rerender({ timeInMs: fresh });
+    expect(result.current.needsSessionRecovery).toBe(false);
+    expect(result.current.workedMinutes).toBe(0);
+    expect(result.current.state).toBe("IDLE");
+    expect(result.current.submissionResult).toBeNull();
+    expect(loadDraft(EMPLOYEE_ID, currentWorkDate())).toEqual(draft);
+  });
+
+  it("rechecks wall time at submit even before the minute tick", async () => {
+    const clock = vi.spyOn(Date, "now");
+    const now = Date.now();
+    const { result } = renderHook(() => useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs: now - 86400_000 + 1000 }));
+    clock.mockReturnValue(now + 1001);
+    try {
+      await act(async () => { await result.current.submit(); });
+      expect(submitTimeLogs).not.toHaveBeenCalled();
+      expect(result.current.state).not.toBe("CHECKOUT_SUCCESS");
+    } finally {
+      clock.mockRestore();
+    }
+  });
+});
+
+
+it.each([null, NaN, Date.now() + 86400_000])("blocks checkout with an invalid/missing/future start %s", async (timeInMs) => {
+  const { result } = renderHook(() => useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs }));
+  await act(async () => result.current.submit());
+  expect(submitTimeLogs).not.toHaveBeenCalled();
+  expect(result.current.state).toBe("IDLE");
 });
