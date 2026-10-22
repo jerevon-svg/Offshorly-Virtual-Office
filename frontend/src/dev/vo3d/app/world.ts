@@ -1327,8 +1327,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
           enteredPlace: (at, yaw, room, localAt) => selfMovement.enteredPlace(toV1Frame(at), yaw, room, localAt),
           // The ANCHOR goes through the V1 frame mapping like every other V1 coordinate; `from`/`to`
           // are world points in the place's own frame and are deliberately NOT converted.
-          movedInPlace: (anchor, from, to, yaw, room) =>
-            selfMovement.movedInPlace(toV1Frame(anchor), from, to, yaw, room),
+          movedInPlace: (anchor, from, to, yaw, room, durationMs, pacing) =>
+            selfMovement.movedInPlace(toV1Frame(anchor), from, to, yaw, room, durationMs, pacing),
           // An upstairs sit (a Meeting Floor chair): anchor mapped like movedInPlace's, the chair's own
           // point left in the place's frame. Absent on a sink without it — the sit then stays local.
           ...(selfMovement.satInPlace ? { satInPlace: (anchor: Vec2, at: Vec2, yaw: number, room: string, seat: string) => selfMovement.satInPlace!(toV1Frame(anchor), at, yaw, room, seat) } : {}),
@@ -6434,6 +6434,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       const fxShown = currentFloor === GROUND_FLOOR_ID;
       if (driftFx.group.visible !== fxShown) { driftFx.group.visible = fxShown; if (!fxShown) driftFx.clear(); }
       driftFx.update(dt / 1000);
+      // a sprint's skid goes out as a braking leg (peers replay it slowing down, the pose with it)
+      selfFeed?.setBraking(playerMode.active ? playerMode.state.braking : 0);
       selfFeed?.frame(dt, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0 || coworkerApproach?.turning === true || directedTurn !== null);
       // PRESENCE'S zone: the Meeting Floor and the lift are inside the office (app/access presenceZoneAt),
       // so riding up is never read as leaving the building — and never as Away.

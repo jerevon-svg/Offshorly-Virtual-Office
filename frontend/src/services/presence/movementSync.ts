@@ -25,7 +25,7 @@ export type MovementState = "standing" | "sitting";
 /** How peers replay a movement. Absent from every V1 client and means "eased" — V1's own PeerWalker
  *  curve. The V2 3D office publishes "linear" for a free-movement LEG (a constant-speed sample of WASD
  *  running): easing a sample of continuous motion halts the body at both ends of every leg. */
-export type WalkPacing = "eased" | "linear";
+export type WalkPacing = "eased" | "linear" | "decel";
 
 export interface ActiveMovement {
   movementId: string;
@@ -148,7 +148,7 @@ interface PositionsSnapshotEntry {
 const yawField = (v: unknown): { yaw: number } | Record<string, never> =>
   typeof v === "number" && Number.isFinite(v) ? { yaw: v } : {};
 const pacingField = (v: unknown): { pacing: WalkPacing } | Record<string, never> =>
-  v === "eased" || v === "linear" ? { pacing: v } : {};
+  v === "eased" || v === "linear" || v === "decel" ? { pacing: v } : {};
 
 interface PositionsSnapshotEvent {
   entries: PositionsSnapshotEntry[];

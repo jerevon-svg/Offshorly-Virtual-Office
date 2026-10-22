@@ -48,7 +48,8 @@ import type { Facing, Vec2 } from "../core/coords";
  *  default for every walk V1 itself publishes; "linear" is a constant-speed sample of continuous free
  *  movement, which must not be eased or the body halts at both ends of every leg. A local vocabulary
  *  rather than a type import, so the world's module graph stays free of V1 (app/world.ts's rule). */
-export type Vo3dWalkPacing = "eased" | "linear";
+/** "decel" (V2 only): a leg the body braked in out of a run — replayed slowing down, with the braking pose */
+export type Vo3dWalkPacing = "eased" | "linear" | "decel";
 
 export interface Vo3dCoworkerWalk {
   /** V1's own movement id. The world starts a replay when this changes and ignores a repeat of it, so a

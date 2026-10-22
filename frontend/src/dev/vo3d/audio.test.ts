@@ -526,18 +526,18 @@ describe("vo3d audio — the beds themselves", () => {
 
 // ---- movement speed --------------------------------------------------------------------------------
 
-describe("vo3d player — the approved 42 / 100 speed tuning (brisk HumanBase walk, 2026-10-21)", () => {
+describe("vo3d player — the 54.6 / 200 speed tuning (1.3x walk, 2x true sprint, 2026-10-21)", () => {
   it("states the two ground speeds once, and derives the sprint from them", () => {
-    expect(PLAYER_WALK_SPEED).toBe(42);
-    expect(PLAYER_SPRINT_SPEED).toBe(100);
-    expect(PLAYER_WALK_SPEED * SPRINT_MULTIPLIER).toBeCloseTo(100, 10);
+    expect(PLAYER_WALK_SPEED).toBeCloseTo(54.6, 10);
+    expect(PLAYER_SPRINT_SPEED).toBe(200);
+    expect(PLAYER_WALK_SPEED * SPRINT_MULTIPLIER).toBeCloseTo(200, 10);
     expect(SPRINT_MULTIPLIER).toBeGreaterThan(1); // sprint is still meaningfully faster than a walk
   });
 
   it("still resolves a step at a quarter of the body radius, so the sweep does not depend on speed", () => {
     // a wall one unit thick, which is thinner than anything in the world, at x = 100
     const wall = (p: { x: number; z: number }) => !(p.x > 99.5 && p.x < 100.5);
-    for (const speed of [30, 54, 70, 100]) {
+    for (const speed of [30, 54.6, 70, 100, 200]) {
       const body = new PlayerBody({ x: 60, z: 0 }, NAV_RADIUS, wall);
       // a stalled-tab frame: the largest dt the app ever hands the player (bootstrap clamps at 250 ms)
       const r = body.move(speed * 0.25, 0);

@@ -134,8 +134,10 @@ describe("shadow focus — static-pass rate at the approved speeds", () => {
     // re-centres over 30 s — 1.6/s walking, 2.3/s sprinting — at the 70 u/s walk; the brisk 42 u/s walk
     // (2026-10-21) needs only 29 (1.0/s). At 60 fps that is 2.7% and 3.8% of frames, so
     // the 5% / 8% budgets are only reached if the frame rate itself falls below ~32 fps / ~26 fps.
-    expect(worstWalk).toBe(29);
-    expect(worstSprint).toBe(68);
+    // 2026-10-21 (later), the 1.3x walk and 2x sprint: 38 (2.1%) and 134 (7.4%) — the sprint now sits close to
+    // its 8% budget at 60 fps (a frame rate under ~55 fps while sprinting would exceed it).
+    expect(worstWalk).toBe(38);
+    expect(worstSprint).toBe(134);
   });
 
   it("THE REGRESSION: the orbit grid would blow both budgets, which is why PLAYER overrides it", () => {

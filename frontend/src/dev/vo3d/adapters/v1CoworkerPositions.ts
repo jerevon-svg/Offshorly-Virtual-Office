@@ -117,7 +117,7 @@ export function resolveWalk(
         path: local.map((p) => ({ x: p.x, z: p.y })),
         durationMs: active.durationMs,
         elapsedMs: Math.min(active.durationMs, Math.max(0, elapsed)),
-        ...(active.pacing === "linear" ? { pacing: "linear" as const } : {}),
+        ...(active.pacing === "linear" || active.pacing === "decel" ? { pacing: active.pacing } : {}),
       };
     }
   }
@@ -127,7 +127,7 @@ export function resolveWalk(
     durationMs: active.durationMs,
     elapsedMs: Math.min(active.durationMs, Math.max(0, elapsed)),
     // Only the one word that changes anything: absent and "eased" are the same replay.
-    ...(active.pacing === "linear" ? { pacing: "linear" as const } : {}),
+    ...(active.pacing === "linear" || active.pacing === "decel" ? { pacing: active.pacing } : {}),
   };
 }
 

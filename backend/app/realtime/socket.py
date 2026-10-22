@@ -519,7 +519,7 @@ _MOVE_STATES = {"standing", "sitting"}
 # means "eased" — V1's own PeerWalker curve. "linear" is what the V2 3D office publishes for a free-
 # movement LEG (a constant-speed 400 ms sample of WASD running): easing a sample of continuous motion
 # brings the body to a halt at both ends of every leg, which is the stop-and-go peers were seeing.
-_PACINGS = {"eased", "linear"}
+_PACINGS = {"eased", "linear", "decel"}
 
 
 def _is_optional_yaw(v) -> bool:

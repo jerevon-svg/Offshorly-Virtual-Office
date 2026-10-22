@@ -32,7 +32,8 @@ import { dist, facingForYaw, wrapAngle, type Facing, type Vec2 } from "../core/c
 /** How a peer replays a movement — the same two words app/coworkers.ts's Vo3dWalkPacing spells, restated
  *  rather than imported so this module keeps exactly one import (spawn.phase5.test.ts holds it to that:
  *  the feed must stay loadable by the standalone page). "linear" is what a free-movement leg is. */
-export type SelfWalkPacing = "eased" | "linear";
+/** "decel": a leg in which the body was braking out of a run (a sprint's skid) — replayed slowing down */
+export type SelfWalkPacing = "eased" | "linear" | "decel";
 
 /** WHERE V2 PUBLISHES A MOVEMENT TO. Implemented by adapters/v1SelfMovement.ts for a real signed-in
  *  session, and by nothing at all for the standalone dev page — which therefore emits nothing, exactly as
@@ -88,7 +89,7 @@ export interface Vo3dSelfMovementSink {
    *  every leg — nothing out-of-frame is ever written as a V1 coordinate. `from`/`to` are the real
    *  movement, in `room`'s frame. Published as an ordinary started/arrived pair so peers replay it
    *  through the interpolation every office walk already uses. */
-  movedInPlace(anchor: Vec2, from: Vec2, to: readonly Vec2[], yaw: number, room: string): void;
+  movedInPlace(anchor: Vec2, from: Vec2, to: readonly Vec2[], yaw: number, room: string, durationMs?: number, pacing?: SelfWalkPacing): void;
   /** THE BODY SAT DOWN INSIDE A NAMED PLACE (a Meeting Floor chair). The in-place pair movedInPlace uses —
    *  V1 keeps holding `anchor` — resolved as SITTING in `seat` at `at`, so peers seat the body in that very
    *  chair and the backend's seat arbitration (and `seat_rejected`) covers upstairs chairs too. OPTIONAL:
@@ -173,6 +174,8 @@ const TELEPORT_UNITS = 40;
 const MIN_DURATION_MS = 100;
 /** Position changes under this are numerically indistinguishable from none. */
 const EPSILON = 1e-4;
+/** an in-place leg (out on the campus, upstairs) is never shorter than this, so its replay is never squeezed */
+const IN_PLACE_MIN_MS = 120;
 
 /** Can this point be published at all? Injected because the answer is V1's, not V2's: only the caller
  *  knows where V1's coordinate frame ends (app/world.ts composes it from adapters/v1Floor's FRAME). The
@@ -183,7 +186,7 @@ export type InRangeTest = (p: Vec2) => boolean;
 type Mode =
   | { kind: "idle" }
   | { kind: "planned" }
-  | { kind: "free"; origin: Vec2; points: Vec2[]; movingMs: number; stillMs: number; sinceSample: number }
+  | { kind: "free"; origin: Vec2; points: Vec2[]; movingMs: number; stillMs: number; sinceSample: number; braked?: boolean }
   /** PHASE 6C — the body is in a chair. Nothing it does there is a movement: the chair tucking in and
    *  rolling out carries it a few units, the seated clip breathes, and none of that is published. The
    *  seated arrival has already said everything V1 needs; the next thing worth a word is standing up. */
@@ -244,6 +247,13 @@ export class SelfMovementFeed {
   private lastInRange: Vec2 | null = null;
   /** out beyond the frame with an anchor but no place named yet to publish it under (entering() does) */
   private unannounced = false;
+  /** how hard the body is braking out of a run right now (player/PlayerMode's skid): a leg it brakes in goes
+   *  out as "decel", so peers replay it slowing down, the braking pose with it */
+  private braking = 0;
+  /** an in-place leg's clock and whether it braked (legs out there are timed, not just spaced) */
+  private localMs = 0;
+  private localStillMs = 0;
+  private localBraked = false;
   private liftAnchor: Vec2 | null = null;
 
   constructor(sink: Vo3dSelfMovementSink, inRange: InRangeTest = () => true) {
@@ -469,15 +479,31 @@ export class SelfMovementFeed {
    *  walking the CAVE is the event rate for walking the same distance in the office — no new timer and
    *  no second movement system. `at`/`origin` are the anchor, unchanged every time; only the local
    *  coordinates move, which is exactly why the server can skip the database write. */
-  private localLeg(pos: Vec2, yaw: number): void {
+  /** SPRINT-READY: a leg out there is at least SAMPLE_UNITS long AND IN_PLACE_MIN_MS long, published with the time
+   *  it really took (a 200 u/s sprint is not a string of 12-unit snaps each replayed at a fixed pace), and a body
+   *  that has stopped publishes the last few units it covered */
+  private localLeg(pos: Vec2, yaw: number, dtMs = 0, moved = 0): void {
     const anchor = this.anchor;
     if (!anchor) return;
     const from = this.localLast;
-    if (from && dist(from, pos) < SAMPLE_UNITS) return;
+    this.localMs += dtMs;
+    if (this.braking > 0.3) this.localBraked = true;
+    this.localStillMs = moved > EPSILON ? 0 : this.localStillMs + dtMs;
+    if (!from) { this.localLast = pos; this.localMs = 0; return; } // the first sample only establishes where this leg starts
+    const d = dist(from, pos);
+    // (a big single step — a placement, a hop — goes out at once; ordinary movement waits for its minimum time)
+    const due = (d >= SAMPLE_UNITS && (this.localMs >= IN_PLACE_MIN_MS || d >= 3 * SAMPLE_UNITS)) || (d > MIN_LEG_UNITS && this.localStillMs >= SETTLE_MS);
+    if (!due) return;
+    const ms = Math.max(MIN_DURATION_MS, this.localMs - (this.localStillMs >= SETTLE_MS ? this.localStillMs : 0));
+    const pacing: SelfWalkPacing = this.localBraked ? "decel" : "linear";
     this.localLast = pos;
-    if (!from) return; // the first sample only establishes where this leg starts
-    this.sink.movedInPlace(anchor, from, [pos], wrapAngle(yaw), this.place!);
+    this.localMs = 0;
+    this.localBraked = false;
+    this.sink.movedInPlace(anchor, from, [pos], wrapAngle(yaw), this.place!, ms, pacing);
   }
+
+  /** this frame's braking out of a run (0 … 1) — app/world passes player/PlayerMode's `braking` */
+  setBraking(b: number): void { this.braking = Number.isFinite(b) ? b : 0; if (this.braking > 0.3 && this.mode.kind === "free") this.mode.braked = true; }
 
   /** THE LIFT'S DOORS HAVE SHUT BEHIND THE BODY and it has been stepped into the car (FloorTransition's
    *  board). Whatever walk brought it into the lift bay is closed HERE, at the last real position — the bay
@@ -664,7 +690,7 @@ export class SelfMovementFeed {
         this.last = pos;
         return;
       }
-      this.localLeg(pos, yaw);
+      this.localLeg(pos, yaw, dtMs, this.last ? dist(pos, this.last) : 0);
       this.last = pos;
       return;
     }
@@ -761,8 +787,9 @@ export class SelfMovementFeed {
     // and a peer replay that never resolves.
     this.flushPending();
     const durationMs = Math.max(MIN_DURATION_MS, leg.movingMs);
-    // LINEAR: a leg is a constant-speed sample of motion that did not stop, and is replayed as one.
-    this.sink.started(leg.origin, points, durationMs, "linear");
+    // LINEAR: a leg is a constant-speed sample of motion that did not stop, and is replayed as one — unless the
+    // body was braking out of a run in it (a skid): then it is replayed slowing down
+    this.sink.started(leg.origin, points, durationMs, leg.braked ? "decel" : "linear");
     this.pending = { at: end, facing: facingForYaw(yaw), yaw: wrapAngle(yaw), dueInMs: durationMs };
   }
 

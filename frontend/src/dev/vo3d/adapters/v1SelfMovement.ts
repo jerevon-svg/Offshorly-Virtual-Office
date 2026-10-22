@@ -158,7 +158,7 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
     /** PHASE 7D — the leg, published as the pair every movement uses. The V1 half never moves: origin,
      *  path and `at` are all the anchor, so `employee_positions` keeps the portal and the server skips
      *  the write entirely (its v1_fields_changed check). The local half is the real walk. */
-    movedInPlace(anchor, from, to, yaw, room) {
+    movedInPlace(anchor, from, to, yaw, room, durationMs, pacing) {
       const anchorTopLeft = toTopLeft(anchor, box);
       if (!isUsablePosition(anchorTopLeft)) {
         state.refused++;
@@ -176,7 +176,9 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
         origin: anchorTopLeft,
         path: [anchorTopLeft],
         roomId: room,
-        durationMs: SNAP_DURATION_MS,
+        // the leg's real time when the feed knows it (a sprint out on the campus is not a string of snaps)
+        durationMs: durationMs ?? SNAP_DURATION_MS,
+        ...(pacing ? { pacing } : {}),
         // The local walk, in the place's own frame. NOT run through toTopLeft: that conversion undoes
         // a V1 sprite box's origin, and these are world points in a frame V1 has no sprites in.
         localOrigin: { x: from.x, y: from.z },

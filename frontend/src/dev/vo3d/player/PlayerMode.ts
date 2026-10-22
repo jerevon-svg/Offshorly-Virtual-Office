@@ -19,9 +19,10 @@
 // setYaw(), never through `rotation.y`.
 import * as THREE from "three";
 import type { Avatar } from "../avatar/Avatar";
+import { Momentum, type MomentumStep } from "./Momentum";
 import type { ControllerStack } from "../avatar/Controller";
 import { CLIP_IDLE, CLIP_RUN, CLIP_WALK } from "../adapters/v1Avatar";
-import { locomotion } from "../avatar/gait";
+import { locomotion, sprintStride } from "../avatar/gait";
 import { headingFor, stepAngle, type Vec2 } from "../core/coords";
 import type { WorldState } from "../world/WorldState";
 import { PlayerBody, type MoveHeights, type StandTest } from "./PlayerBody";
@@ -73,8 +74,12 @@ export const DOOR_LOOKAHEAD = 46;
  *  into sub-steps no longer than a quarter of the body radius (2 units at NAV_RADIUS 8) regardless of how
  *  long the step is, so the resolution of the sweep does not depend on speed at all — 100 u/s on a
  *  stalled-tab 250 ms frame is 25 units, resolved as 13 sub-steps, exactly as 54 u/s was resolved as 7. */
-export const PLAYER_WALK_SPEED = 42;
-export const PLAYER_SPRINT_SPEED = 100;
+//
+//  2026-10-21 (later): a faster walk (1.3x, 42 → 54.6) and a TRUE sprint (2x, 100 → 200), reached and left through
+//  the body's momentum (player/Momentum) — a sprint builds, skids to a stop and leans into its turns. Still one
+//  PlayerBody.move per frame, sub-stepped at a quarter of the body radius: 200 u/s tunnels nothing walking cannot.
+export const PLAYER_WALK_SPEED = 54.6;
+export const PLAYER_SPRINT_SPEED = 200;
 /** SPRINT. A multiplier on the walk speed and nothing else — no stamina, no state, no second movement
  *  path. Holding Shift scales the per-frame delta; the delta still goes through PlayerBody.move, which
  *  sub-steps at a quarter of the body radius REGARDLESS of how long the step is, so sprinting cannot
@@ -222,6 +227,9 @@ export class PlayerMode {
   startRide(hooks: RideHooks, heading = Math.PI - this.d.avatar.yaw): boolean {
     if (!this._active || this.ride || this.d.stack.owner !== "Player" || !hooks.canStand(this.body.pos)) return false;
     this.landNow();
+    // stepping onto a deck ends whatever the feet were doing
+    this.momentum.reset();
+    this.d.avatar.setGait(null);
     const ground = hooks.ground?.(this.body.pos, heading) ?? FLAT_GROUND;
     this.ride = { motion: new ScooterMotion(heading), body: new PlayerBody(this.body.pos, this.d.radius, hooks.canStand), hooks, lookHold: 0, last: { ...this.body.pos }, ground, y: ground.y, pitch: ground.pitch,
       jump: new PlayerJump(SCOOTER_JUMP), squash: 0, camY: ground.y, drift: new ScooterDrift() };
@@ -303,7 +311,16 @@ export class PlayerMode {
      *  published so the foley layer can pace footsteps off distance rather than off a timer, which is
      *  what makes them follow 70 and 100 without knowing either number. */
     travelled: 0,
+    /** the body's own speed (its momentum, u/s) and how hard it is skidding (0 … 1) — the movement feed tells
+     *  peers a braking leg by it */
+    speed: 0,
+    braking: 0,
   };
+  /** ON FOOT IN PLAYER VIEW the body carries momentum (player/Momentum): built up, skidded off, leaned into turns */
+  private readonly momentum = new Momentum();
+  /** which foot plants ahead in a skid (alternates per skid) */
+  private skidLead: 1 | -1 = 1;
+  private wasSkidding = false;
 
   constructor(deps: PlayerDeps) {
     this.d = deps;
@@ -489,6 +506,10 @@ export class PlayerMode {
       if (this.d.freeLook?.() && (look.dx || look.dy)) this.camera.look(look.dx, look.dy);
       this.state.sprinting = false;
       this.state.travelled = 0;
+      // an interaction (or anything else) took the body: whatever momentum it had is gone, not banked
+      this.momentum.reset();
+      this.state.speed = 0; this.state.braking = 0;
+      this.d.avatar.setGait(null);
       // Somebody else is driving the body; a jump cannot continue through a seat or an approach, and
       // leaving one running would fight whatever they write into the transform.
       this.landNow();
@@ -506,24 +527,39 @@ export class PlayerMode {
     const speed = this.d.speed() * (sprinting ? SPRINT_MULTIPLIER : 1);
     this.state.sprinting = sprinting;
     let travelled = 0;
+    // WASD is CAMERA-RELATIVE: forward is where you are looking, which is what every third-person game
+    // means by W and the only thing that stays intuitive while the camera orbits. It says where the body WANTS
+    // to go; its momentum (player/Momentum) says how far it actually tries to go this frame.
+    let want: Vec2 | null = null;
     if (axis.x || axis.z) {
-      // WASD is CAMERA-RELATIVE: forward is where you are looking, which is what every third-person game
-      // means by W and the only thing that stays intuitive while the camera orbits.
       const f = this.camera.forward, r = this.camera.right;
-      const dx = (f.x * -axis.z + r.x * axis.x) * speed * dt;
-      const dz = (f.z * -axis.z + r.z * axis.x) * speed * dt;
+      const wx = f.x * -axis.z + r.x * axis.x, wz = f.z * -axis.z + r.z * axis.x, wl = Math.hypot(wx, wz);
+      if (wl > 1e-9) want = { x: wx / wl, z: wz / wl };
+    }
+    const m: MomentumStep = this.momentum.step(want, speed * (want ? Math.min(1, Math.hypot(axis.x, axis.z)) : 0), sprinting, dt);
+    if (m.dx || m.dz) {
       const from = { x: p.x, z: p.z };
-      const res = this.body.move(dx, dz, this.walkHeights());
+      const res = this.body.move(m.dx, m.dz, this.walkHeights());
       // WALKED OFF AN EDGE deeper than a step down (only ever one it was already straddling — see
       // world/exteriorGround): the body falls from where its feet were, and lands below
       if (res.fell) this.vertical.fall(res.feet!);
       travelled = res.travelled;
       this.state.blocked = res.blocked;
-      // face where the body ACTUALLY went (so sliding along a wall turns Bon along it), falling back to
-      // where the player is pushing when he is pinned and went nowhere
-      this.heading = travelled > 1e-4 ? headingFor(res.pos.x - from.x, res.pos.z - from.z) : headingFor(dx, dz);
-    } else this.state.blocked = false;
+      // MOMENTUM MEETS THE WORLD: a wall, a desk, a car — what it did not allow is lost there, never carried on
+      if (res.blocked) this.momentum.blocked(res.pos.x - from.x, res.pos.z - from.z, dt);
+      // face where the body ACTUALLY went (so sliding along a wall turns Bon along it) — and in a skid, the way
+      // it is still sliding, not the new way the keys push; falling back to the push when it is pinned
+      this.heading = travelled > 1e-4 ? headingFor(res.pos.x - from.x, res.pos.z - from.z) : want ? headingFor(want.x, want.z) : this.heading;
+    } else {
+      this.state.blocked = false;
+      if (want) this.heading = headingFor(want.x, want.z);
+    }
     this.state.travelled = travelled;
+    this.state.speed = this.momentum.speed;
+    this.state.braking = m.brake;
+    const skidding = m.brake > 0.2;
+    if (skidding && !this.wasSkidding) this.skidLead = this.skidLead === 1 ? -1 : 1;
+    this.wasSkidding = skidding;
 
     this.moving = travelled > 1e-4;
     // THE VERTICAL HALF, stepped AFTER the horizontal one and written into the same transform. The
@@ -554,11 +590,20 @@ export class PlayerMode {
     // stopped at zero. Restoring here rather than in each branch keeps that one line in one place.
     if (landed) this.d.avatar.setClipTimeScale(CLIP_WALK, 1);
 
+    // THE GAIT'S SHAPE (avatar/gaitPose): the sprint's lean, stride and arm pump grow with the speed it is
+    // actually doing; a skid plants a foot and leans back; a turn at speed banks. Off in the air.
+    const sprintAmount = Math.max(0, Math.min(1, (this.momentum.speed - 80) / (PLAYER_SPRINT_SPEED - 80)));
+    this.d.avatar.setGait(this.vertical.airborne ? null : { sprint: skidding ? 0 : sprintAmount, bank: m.bank, brake: m.brake, lead: this.skidLead });
+
     if (this.vertical.airborne) {
       // IN THE AIR. The pose is held (avatar/Avatar.freezeClipAt) rather than animated: no shipped
       // character package carries a jump clip, and the arc itself is what sells the motion. Takeoff and
       // landing are the crossfades into and out of it.
       this.d.avatar.freezeClipAt(CLIP_WALK, AIRBORNE_POSE_PHASE);
+    } else if (this.moving && skidding) {
+      // A SKID: the run eases into the idle under the braking pose (avatar/gaitPose) — a body braking, not a
+      // run cycle dragged along the floor
+      this.d.avatar.play(this.restingClip, 0.15);
     } else if (this.moving) {
       // idle -> walking -> running -> walking -> idle, all through the mixer's own crossfade. Sprinting
       // with no run clip in the GLB falls back to a faster walk rather than freezing on whatever was
@@ -566,7 +611,7 @@ export class PlayerMode {
       // rate that makes the fallback keep its feet on the ground instead of skating.
       // rate from the ground ACTUALLY covered, not from the input: a player scraping along a wall slows
       // his own stride down instead of moonwalking on the spot (a HumanBase body also picks walk/run by it)
-      const g = locomotion(this.d.avatar.runtime, travelled / dt, sprinting, this.d.avatar.hasClip(CLIP_RUN), this.d.avatar.currentClip);
+      const g = locomotion(this.d.avatar.runtime, travelled / dt, sprinting, this.d.avatar.hasClip(CLIP_RUN), this.d.avatar.currentClip, sprintStride(sprintAmount));
       this.d.avatar.play(g.clip);
       this.d.avatar.setClipTimeScale(g.clip, g.rate);
     } else {
@@ -577,7 +622,9 @@ export class PlayerMode {
       // the lookahead follows the HEADING, not the camera: strafing or backing through a doorway has to
       // open it too, and at yaw 0 the camera's forward points north whichever way the player is walking
       this.doorIntent.length = 0;
-      this.doorIntent.push({ x: this.body.pos.x + Math.sin(this.heading) * DOOR_LOOKAHEAD, z: this.body.pos.z - Math.cos(this.heading) * DOOR_LOOKAHEAD });
+      // (further ahead the faster it goes: a sprint reaches a door in under half the time a walk does)
+      const look = Math.max(DOOR_LOOKAHEAD, this.momentum.speed * 0.45);
+      this.doorIntent.push({ x: this.body.pos.x + Math.sin(this.heading) * look, z: this.body.pos.z - Math.cos(this.heading) * look });
     } else {
       this.doorIntent.length = 0;
     }

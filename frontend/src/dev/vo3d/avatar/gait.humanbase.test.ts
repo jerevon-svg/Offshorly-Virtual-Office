@@ -9,7 +9,7 @@ import type { EmployeeAvatar } from "../human/humanBaseContract";
 import { BON_AVATAR, CATALOGUE_BY_ID, HUMAN_BASE_URL } from "../human/humanCatalogue";
 import { HumanAvatar, setGlbFetcher } from "../human/HumanAvatar";
 import { loadHumanGlb, publicPath } from "../human/humanGlb.testutil";
-import { HUMANBASE_CLIP_GROUND_SPEED, locomotion } from "./gait";
+import { HUMANBASE_CLIP_GROUND_SPEED, locomotion, sprintStride } from "./gait";
 import { PLAYER_SPRINT_SPEED, PLAYER_WALK_SPEED } from "../player/PlayerMode";
 
 /** mean backward speed of each foot across its ground-contact runs (u/s at rate 1), and the hands' fore-aft swing (u) */
@@ -66,9 +66,11 @@ describe.skipIf(!fs.existsSync(publicPath(HUMAN_BASE_URL)))("HumanBase gait cali
     const w = locomotion("humanbase", PLAYER_WALK_SPEED, false, true, null);
     expect(w.clip).toBe("walking");
     expect(w.rate * HUMANBASE_CLIP_GROUND_SPEED.walking).toBeCloseTo(PLAYER_WALK_SPEED, 5);   // no skating
-    const r = locomotion("humanbase", PLAYER_SPRINT_SPEED, true, true, "walking");
+    // the 200 sprint: cadence x the clip's stride x the stride avatar/gaitPose opens up — within 10% (a cartoon
+    // sprint's quick feet; the cadence ceiling keeps it from becoming a blur)
+    const r = locomotion("humanbase", PLAYER_SPRINT_SPEED, true, true, "walking", sprintStride(1));
     expect(r.clip).toBe("running");
-    expect(r.rate * HUMANBASE_CLIP_GROUND_SPEED.running).toBeCloseTo(PLAYER_SPRINT_SPEED, 5);
+    expect(r.rate * HUMANBASE_CLIP_GROUND_SPEED.running * sprintStride(1)).toBeGreaterThan(PLAYER_SPRINT_SPEED * 0.9);
     // a walk does not flip to the run on an ordinary speed wobble
     expect(locomotion("humanbase", PLAYER_WALK_SPEED * 1.3, false, true, "walking").clip).toBe("walking");
   });

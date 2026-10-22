@@ -10,6 +10,7 @@ import { BON_LODS, CLIP_IDLE, CLIP_SIT, CLIP_SIT_ANSWER, DRACO_PATH, type Avatar
 import type { Vec2 } from "../core/coords";
 import { RiderPose } from "./riderPose";
 import { CrashPose, type CrashBodyFrame } from "./crashPose";
+import { GaitPose, type GaitInput } from "./gaitPose";
 import { CRASH } from "../world/accidentMotion";
 import { RIDER_GRIPS } from "../world/scooters";
 import type { HumanAvatar } from "../human/HumanAvatar";
@@ -56,6 +57,8 @@ export class Avatar {
   /** S6 — THE CRASH on the skeleton (avatar/crashPose): a post-mixer layer after the rider's, idle until a fall */
   private readonly crash: CrashPose;
   private crashing = false;
+  /** SPRINT / SKID / BANK over the locomotion clips (avatar/gaitPose): before the rider pose, idle until fast */
+  private readonly gait: GaitPose;
 
   /** HUMANBASE BODY (production integration, avatar/humanBody): when set, `load` builds this appearance on the
    *  shared HumanBase runtime instead of fetching the legacy GLB. Everything outside this class — controllers,
@@ -82,6 +85,7 @@ export class Avatar {
     this.root.add(this.model);
     this.rider = new RiderPose(this.model, RIDER_GRIPS);
     this.crash = new CrashPose(this.model, () => this.rider.drop());
+    this.gait = new GaitPose(this.model);
   }
 
   async load(lod: AvatarLod): Promise<void> {
@@ -109,6 +113,8 @@ export class Avatar {
     this.triangles = h.stats().triangles;
     // the scooter rider is a HumanBase layer (the same contract the HumanBase QA viewer drives)
     this.rider.setScene(h.scene);
+    this.gait.setScene(h.scene);
+    h.addLayer({ id: "vo-gait-shape", order: 25, update: (dt) => this.gait.update(dt) });
     h.addLayer({ id: "vo-scooter-rider", order: 30, update: (dt) => this.rider.update(dt) });
     this.crash.setScene(h.scene);
     h.addLayer({ id: "vo-scooter-crash", order: 40, update: (dt) => this.crash.update(dt) });
@@ -146,6 +152,7 @@ export class Avatar {
     this.model.add(scene);
     this.rider.setScene(scene);
     this.crash.setScene(scene);
+    this.gait.setScene(scene);
     this.mixer = new THREE.AnimationMixer(scene);
     for (const clip of gltf.animations) this.actions[clip.name] = this.mixer.clipAction(clip);
     this.current = null;
@@ -180,7 +187,7 @@ export class Avatar {
    *  idles over the fall); the root stays where the caller put it (upright, under the hips). A body without the
    *  standard chain is tipped whole about its hips instead. */
   setCrash(f: CrashBodyFrame | null): void {
-    if (f && !this.crashing) { this.freezeClipAt(CLIP_IDLE, 0); this.crashing = true; }
+    if (f && !this.crashing) { this.gait.drop(); this.freezeClipAt(CLIP_IDLE, 0); this.crashing = true; }
     if (!f && this.crashing) {
       this.crashing = false;
       this.setClipTimeScale(CLIP_IDLE, 1);
@@ -293,13 +300,17 @@ export class Avatar {
       return;
     }
     this.mixer?.update(dt);
+    this.gait.update(dt);
     this.rider.update(dt);
     this.crash.update(dt);
   }
 
   // ---- the scooter rider (avatar/riderPose) ----
   /** mount (true) or dismount (false): hands to the grips and the body onto the deck, blended either way */
-  setRiding(on: boolean): void { this.rider.set(on); }
+  setRiding(on: boolean): void { if (on) this.gait.drop(); this.rider.set(on); }
+  /** this frame's sprint / skid / bank (player/PlayerMode, from the body's own momentum), or null */
+  setGait(g: GaitInput | null): void { this.gait.set(this.crashing ? null : g); }
+  get gaitStats(): GaitPose["stats"] { return this.gait.stats; }
   /** the deck's roll this frame (world/scooters' lean), so the body leans with the scooter */
   setRideLean(lean: number): void { this.rider.setLean(lean); }
   /** the deck's pitch this frame (nose up +), so the body climbs and descends with the scooter */

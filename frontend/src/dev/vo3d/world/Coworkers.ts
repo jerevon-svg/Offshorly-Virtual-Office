@@ -63,13 +63,14 @@ import { dist, FACING_YAW, stepAngle, wrapAngle, type Facing, type Vec2 } from "
 import { standablePointNear, type StandTest } from "../player/PlayerBody";
 import { AIRBORNE_POSE_PHASE, JUMP_DURATION_MS, PlayerJump } from "../player/PlayerJump";
 import type { Vo3dCoworker, Vo3dWalkPacing } from "../app/coworkers";
-import { DOOR_LOOKAHEAD, PLAYER_SPRINT_SPEED, PLAYER_WALK_SPEED } from "../player/PlayerMode";
-import { gaitRate, locomotion } from "../avatar/gait";
+import { DOOR_LOOKAHEAD, PLAYER_SPRINT_SPEED } from "../player/PlayerMode";
+import { gaitRate, locomotion, sprintStride } from "../avatar/gait";
 import { SeatedWork } from "../human/seatedWork";
 import type { DoorBody } from "../interact/Door";
 import { ReplayWalk } from "./coworkerWalk";
 import { RiderPose } from "../avatar/riderPose";
 import { CrashPose, type CrashBodyFrame } from "../avatar/crashPose";
+import { GaitPose } from "../avatar/gaitPose";
 import { CRASH } from "./accidentMotion";
 import { RIDER_GRIPS } from "./scooters";
 import { deskSeatedRootForRig, HUMANBASE_PELVIS_BELOW_HIPS, sceneRig, seatedRootForRig, type SeatedRig } from "../interact/seatContact";
@@ -132,7 +133,8 @@ const LEG_GRACE_MS = 200;
 // package ships no run clip" fallback and the rate that keeps it from skating.
 /** A movement whose MEAN speed is at least this runs; below it walks. Half way between the two speeds the
  *  player can move at, so a walk at 70 is a walk and a sprint at 100 is a run, with margin either side. */
-const RUN_FROM_SPEED = (PLAYER_WALK_SPEED + PLAYER_SPRINT_SPEED) / 2;
+// a peer leg faster than any walk (54.6) is a run: 80, not the walk/sprint midpoint (that became 127 with the 200 sprint)
+const RUN_FROM_SPEED = 80;
 
 /** How close two DESK-PLACED coworkers may stand before the second is nudged to the next legal ring. Half
  *  a body rather than a full one: the roster's own per-room seating already gives everyone a distinct
@@ -372,6 +374,11 @@ class CoworkerBody {
   private riderPose: RiderPose | null = null;
   /** S6 — the crash on the skeleton, made with the rider pose (a crash only ever follows a ride) */
   private crashPose: CrashPose | null = null;
+  /** THE SPRINT / SKID / BANK this peer's replay shows (avatar/gaitPose), the local body's own layer */
+  private readonly gait: GaitPose;
+  private gaitYaw = 0;
+  private skidLead: 1 | -1 = 1;
+  private wasDecel = false;
   /** S2 — on a scooter: the pose stream owns where this body is, and nothing else may move it */
   private scooterRide: CoworkerScooterRide | null = null;
   /** S2 — the movement that arrived while the ride still held the body: the rider's own step off, which can
@@ -459,6 +466,10 @@ class CoworkerBody {
       this.model.add(h.human.root);
       this.root.add(this.model);
       for (const clip of h.clips) { const a = h.action(clip.name); if (a) this.actions[clip.name] = a; }
+      this.gait = new GaitPose(this.model);
+      this.gait.setScene(h.human.scene);
+      const gait = this.gait;
+      h.human.addLayer({ id: "vo-gait-shape", order: 25, update: (dt) => gait.update(dt) });
     } else {
       this.human = null;
       this.triangles = source.triangles;
@@ -466,6 +477,8 @@ class CoworkerBody {
       const body = cloneSkinned(source.scene) as THREE.Group;
       this.model.add(body);
       this.root.add(this.model);
+      this.gait = new GaitPose(this.model);
+      this.gait.setScene(body);
       this.mixer = new THREE.AnimationMixer(body);
       // EVERY clip the prototype carries, bound once. The prototypes are the same consolidated GLBs the
       // hero avatar and the stress crowd use, so `walking` is there; hasClip is still asked before it is
@@ -774,6 +787,7 @@ class CoworkerBody {
    *  off, back to its resting clip where it stands, for the rider's own movement feed to take it from there. */
   setScooterRide(ride: CoworkerScooterRide | null): void {
     if (ride && !this.scooterRide) {
+      this.gait.drop();
       if (this.seatedIn !== null) this.standUp();
       this.replay = null; this.settling = false; this.coastMs = 0; this.targetYaw = null; this.settleYaw = null; this.travelHeading = null;
       this.land();
@@ -835,6 +849,8 @@ class CoworkerBody {
       this.tick(dt);
       return true;
     }
+    // (the gait's shape is the replay's to set, frame by frame; standing, seated or coasting it fades out)
+    this.gait.set(null);
     if (this.seatedIn !== null) {
       // Seated: the clip breathes, the root does not move. Nothing below may play idle over the sit.
       this.tick(dt);
@@ -862,12 +878,23 @@ class CoworkerBody {
         this.root.rotation.set(0, this.yaw, 0);
         moved = true;
       }
-      if (moved && !airborne) {
+      // THEIR GAIT'S SHAPE, as the local body draws its own: a sprint leans and opens up with the speed; a leg they
+      // braked in ("decel") is the skid — the braking pose over the idle — and a turn at speed banks
+      const speedNow = step.travelled / Math.max(dt, 1e-4);
+      const decel = this.replay.pacing === "decel" && this.replay.meanSpeed > 60;
+      if (decel && !this.wasDecel) this.skidLead = this.skidLead === 1 ? -1 : 1;
+      this.wasDecel = decel;
+      const yawRate = dt > 0 ? Math.atan2(Math.sin(this.yaw - this.gaitYaw), Math.cos(this.yaw - this.gaitYaw)) / dt : 0;
+      this.gaitYaw = this.yaw;
+      const sprint = Math.max(0, Math.min(1, (this.replay.meanSpeed - 80) / (PLAYER_SPRINT_SPEED - 80)));
+      this.gait.set(airborne || !moved ? null : { sprint: decel ? 0 : sprint, bank: Math.max(-0.16, Math.min(0.16, (yawRate * speedNow / 1100) * 0.16)), brake: decel ? 1 : 0, lead: this.skidLead });
+      if (moved && !airborne && decel) this.play(this.restingClip, 0.15);
+      else if (moved && !airborne) {
         this.play(this.locomotion);
         const action = this.actions[this.locomotion];
         // Rate from the ground ACTUALLY covered this frame, against the speed THIS clip was authored for,
         // so a replay that is slower or faster than the clip still lands its feet instead of skating.
-        if (action) action.timeScale = gaitRate(this.runtime, this.locomotion, step.travelled / Math.max(dt, 1e-4), this.actions[CLIP_RUN] !== undefined);
+        if (action) action.timeScale = gaitRate(this.runtime, this.locomotion, speedNow / (this.locomotion === CLIP_RUN ? sprintStride(sprint) : 1), this.actions[CLIP_RUN] !== undefined);
       }
       if (this.replay.done) {
         // The route has run out. A reconciliation glide already knew its yaw; a peer walk waits for the
@@ -933,7 +960,7 @@ class CoworkerBody {
   /** advance the animation: a legacy clone's own mixer, or the HumanBase runtime (pose restore → mixer → layers → face) */
   private tick(dt: number): void {
     if (this.human) { this.seatedWork?.update(dt, this.seatedIn !== null && this.current === CLIP_SIT); this.human.update(dt); }
-    else { this.mixer?.update(dt); this.riderPose?.update(dt); this.crashPose?.update(dt); }
+    else { this.mixer?.update(dt); this.gait.update(dt); this.riderPose?.update(dt); this.crashPose?.update(dt); }
   }
 
   /** Stop replaying without moving the body — for a walk whose person left the roster mid-stride. */

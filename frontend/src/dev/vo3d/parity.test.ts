@@ -14,7 +14,7 @@ import * as THREE from "three";
 import { SlidingDoor, type DoorBody } from "./interact/Door";
 import { ReplayWalk } from "./world/coworkerWalk";
 import { CLIP_RUN, CLIP_WALK } from "./adapters/v1Avatar";
-import { locomotionClip, locomotionRate, CLIP_GROUND_SPEED } from "./avatar/gait";
+import { locomotion, locomotionClip, locomotionRate, sprintStride, CLIP_GROUND_SPEED } from "./avatar/gait";
 import { PlayerJump } from "./player/PlayerJump";
 import { PlayerInput } from "./player/PlayerInput";
 import { PLAYER_SPRINT_SPEED, PLAYER_WALK_SPEED } from "./player/PlayerMode";
@@ -145,20 +145,21 @@ describe("vo3d parity B — run cycle", () => {
     expect(locomotionRate(CLIP_WALK, PLAYER_WALK_SPEED)).toBeCloseTo(PLAYER_WALK_SPEED / 30, 5);
   });
 
-  it("keeps a RUNNING body's feet on the ground at sprint speed", () => {
-    expect(locomotionRate(CLIP_RUN, PLAYER_SPRINT_SPEED)).toBeCloseTo(PLAYER_SPRINT_SPEED / 48, 5);
+  it("keeps a RUNNING body's feet on the ground at sprint speed (its stride opened up by avatar/gaitPose)", () => {
+    const r = locomotion("legacy-glb", PLAYER_SPRINT_SPEED, true, true, null, sprintStride(1));
+    expect(r.rate * CLIP_GROUND_SPEED[CLIP_RUN] * sprintStride(1)).toBeCloseTo(PLAYER_SPRINT_SPEED, 5);
   });
 
   it("THE FALLBACK NO LONGER SKATES: a sprint on a walk-only rig reaches the rate the ground demands", () => {
     // the defect: one ceiling of 2.5 clamped this to 40 u/s of stride under 100 u/s of travel
-    const needed = PLAYER_SPRINT_SPEED / CLIP_GROUND_SPEED[CLIP_WALK];
+    const needed = PLAYER_SPRINT_SPEED / sprintStride(1) / CLIP_GROUND_SPEED[CLIP_WALK];
     expect(needed).toBeGreaterThan(2.5);
-    expect(locomotionRate(CLIP_WALK, PLAYER_SPRINT_SPEED)).toBeCloseTo(needed, 2);
+    expect(locomotion("legacy-glb", PLAYER_SPRINT_SPEED, true, false, null, sprintStride(1)).rate).toBeCloseTo(needed, 2);
   });
 
   it("still guards a spike: a pathological frame cannot drive a clip arbitrarily fast", () => {
-    expect(locomotionRate(CLIP_WALK, 100_000)).toBeLessThanOrEqual(3.4);
-    expect(locomotionRate(CLIP_RUN, 100_000)).toBeLessThanOrEqual(2.5);
+    expect(locomotionRate(CLIP_WALK, 100_000)).toBeLessThanOrEqual(4.5);
+    expect(locomotionRate(CLIP_RUN, 100_000)).toBeLessThanOrEqual(3.4);
   });
 
   it("never stalls a moving body's clip completely", () => {

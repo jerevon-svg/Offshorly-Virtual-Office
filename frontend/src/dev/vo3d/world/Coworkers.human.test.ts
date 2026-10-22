@@ -66,7 +66,7 @@ describe("Coworkers — HumanBase remote parity", () => {
   it("S2 — a HumanBase peer on a scooter: the rider pose is ONE layer on its runtime, added on the first ride only", async () => {
     const cw = make();
     await cw.sync([coworker("jerevon@x.com", "bon")]);
-    expect(layers).toEqual([]); // nobody pays for it until they ride
+    expect(layers).toEqual(["vo-gait-shape"]); // the gait's shape is every body's; the rider's only once they ride
     expect(cw.setScooterRide("jerevon@x.com", { x: 900, z: 1330, y: 4, yaw: 0.5, lean: 0.1, pitch: 0 })).toBe(true);
     cw.update(1 / 60);
     const bonRoot = cw.group.children.find((c) => c.name === "coworker:jerevon")!;
@@ -74,7 +74,7 @@ describe("Coworkers — HumanBase remote parity", () => {
     cw.setScooterRide("jerevon@x.com", null);
     cw.setScooterRide("jerevon@x.com", { x: 910, z: 1330, y: 4, yaw: 0.5, lean: 0, pitch: 0 });
     // (S6: the crash layer is made with it — a crash only ever follows a ride)
-    expect(layers).toEqual(["vo-scooter-rider", "vo-scooter-crash"]);
+    expect(layers).toEqual(["vo-gait-shape", "vo-scooter-rider", "vo-scooter-crash"]);
   });
 
   it("S6 — a peer's CRASH frame drives its body: the root stays upright under the hips; a body with no rig to pose is tipped whole about its hips; null gives it back", async () => {
