@@ -65,6 +65,8 @@ import { roomLayers, FRAME_WIDTH } from "../../../data/office-layout";
 import { emailKey, selfEmailKey } from "../adapters/v1Coworkers";
 import { KIOSK_INTERACTION_ID } from "../rooms/reception";
 import { Vo3dKioskCard, type Vo3dKioskState } from "./Vo3dKioskCard";
+import { HR_SERVICES_INTERACTION_ID } from "../rooms/executive";
+import { Vo3dHrServices } from "./Vo3dHrServices";
 import { attendanceService } from "../../../services/attendance";
 import { getCurrentUserId } from "../../../auth/useAuthGate";
 import { Vo3dExitCard } from "./Vo3dExitCard";
@@ -353,6 +355,8 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   // Cave portal are. `kioskPhase` is THIS CLIENT'S request state and nothing more — what is TRUE about
   // the work session is `attendance`, which comes from V1 and is never inferred from a button press.
   const [kioskOpen, setKioskOpen] = useState(false);
+  /** the Executive Room HR desk's HR Services panel — opened by walking up to its visitor side, from either view */
+  const [hrOpen, setHrOpen] = useState(false);
   // INTERACTION V2 — THE OBJECT CARD (Office View): a clicked chair, desk, lift or fixture, and where it is on
   // screen right now (it follows the object through a pan, as a person's card follows them)
   const [objectSel, setObjectSel] = useState<Vo3dObjectSelection | null>(null);
@@ -854,9 +858,13 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
       // exactly where OfficeMap.tsx emits it: after a finished approach, keyed on the same email. The
       // server still rejects self and non-roster targets.
       onApproachArrived: (email) => emitApproachArrived(email),
-      // PHASE 7E — WALKED UP TO A FIXTURE. Reception's kiosk is the only one that opens anything today;
-      // every other walk-up point is still the ambient "you are here" it has always been.
+      // PHASE 7E — WALKED UP TO A FIXTURE. Reception's kiosk and the Executive Room's HR desk open
+      // something; every other walk-up point is still the ambient "you are here" it has always been.
       onInteractionArrived: (entityId) => {
+        if (entityId === HR_SERVICES_INTERACTION_ID) {
+          setHrOpen(true);
+          return;
+        }
         if (entityId !== KIOSK_INTERACTION_ID) return;
         setKioskPhase("idle");
         setKioskOpen(true);
@@ -2201,7 +2209,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   // verbs stand down and a locked pointer is released so the menu can be clicked at once; closing gives
   // the pointer back when it was ours to give.
   const objectMenuVisible = objectSel !== null && objectAnchor !== null && objectAnchor.visible;
-  useMenuPointer(menuVisible || objectMenuVisible || exitOpen || kioskOpen || floorPicker !== null, worldRef);
+  useMenuPointer(menuVisible || objectMenuVisible || exitOpen || kioskOpen || hrOpen || floorPicker !== null, worldRef);
 
   return (
     <>
@@ -2249,6 +2257,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
           onClose={() => setKioskOpen(false)}
         />
       )}
+      {hrOpen && <Vo3dHrServices onClose={() => setHrOpen(false)} />}
       {floorPicker && (
         <Vo3dFloorPicker
           rows={elevatorFloorRows(floorPicker.from, FLOOR_ORDER, FLOORS)}

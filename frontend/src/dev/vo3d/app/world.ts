@@ -19,7 +19,7 @@ import { CENTRAL_HUB, OPEN_BANDS as HUB_OPEN_BANDS,
   MONUMENT_INTERACTION_ID as HUB_MONUMENT_ID, SHELF_INTERACTION_ID as HUB_SHELF_ID, TOUCAN_PERCH,
   CHAMPIONSHIP_ENTRANCE_ID, RENDEZVOUS as HUB_RENDEZVOUS } from "../rooms/central-hub";
 import { EXECUTIVE_ROOM,
-  CABINET_L_INTERACTION_ID, CABINET_R_INTERACTION_ID, CREDENZA_INTERACTION_ID, DOOR_EAST_ID as EXEC_DOOR_EAST_ID,
+  CABINET_L_INTERACTION_ID, CABINET_R_INTERACTION_ID, CREDENZA_INTERACTION_ID, HR_SERVICES_INTERACTION_ID, DOOR_EAST_ID as EXEC_DOOR_EAST_ID,
   DOOR_WEST_ID as EXEC_DOOR_WEST_ID, EXECUTIVE_LOUNGE_IDS, EXECUTIVE_SEAT_IDS, MEDIA_INTERACTION_ID } from "../rooms/executive";
 import { CMS_ROOM,
   BOARD_INTERACTION_ID as CMS_BOARD_ID, CMS_LOUNGE_IDS, CMS_SEAT_IDS,
@@ -5828,6 +5828,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   exec.add({ f: () => startApproach(CABINET_R_INTERACTION_ID) }, "f").name("▶ read the awards (east)");
   exec.add({ f: () => startApproach(MEDIA_INTERACTION_ID) }, "f").name("▶ view the display");
   exec.add({ f: () => startApproach(CREDENZA_INTERACTION_ID) }, "f").name("▶ display credenza");
+  exec.add({ f: () => startApproach(HR_SERVICES_INTERACTION_ID) }, "f").name("▶ HR Services");
   exec.add(execState, "chair").disable().listen();
   exec.add(execState, "slot").disable().listen();
   exec.add(execState, "seat").disable().listen();
@@ -7636,7 +7637,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       state: execState, doorState: execDoorState, startSit: startExecutiveSit, startApproach, startLoungeSit,
       chairs: EXECUTIVE_SEAT_IDS,
       seats: loungeSeats.map((s5, i) => ({ i, id: s5.id, slot: s5.label })).filter((r) => r.id.startsWith(EXECUTIVE_ROOM.id)),
-      approaches: { cabinetWest: CABINET_L_INTERACTION_ID, cabinetEast: CABINET_R_INTERACTION_ID, media: MEDIA_INTERACTION_ID, credenza: CREDENZA_INTERACTION_ID },
+      approaches: { cabinetWest: CABINET_L_INTERACTION_ID, cabinetEast: CABINET_R_INTERACTION_ID, media: MEDIA_INTERACTION_ID, credenza: CREDENZA_INTERACTION_ID, hrServices: HR_SERVICES_INTERACTION_ID },
       stand: () => { execSeat?.stand(); loungeSeat?.stand(); },
       get seat() { return execSeat; }, get lounge() { return loungeSeat; }, get door() { return execDoor; },
     },

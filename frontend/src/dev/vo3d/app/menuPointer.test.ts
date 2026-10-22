@@ -144,7 +144,7 @@ describe("PlayerInput while a menu is open", () => {
 describe("wiring", () => {
   const strip = (f: string) => readFileSync(f, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
   it("every interaction menu goes through the one gate", () => {
-    expect(strip("src/dev/vo3d/app/Vo3dOverlay.tsx")).toContain("useMenuPointer(menuVisible || objectMenuVisible || exitOpen || kioskOpen || floorPicker !== null, worldRef);");
+    expect(strip("src/dev/vo3d/app/Vo3dOverlay.tsx")).toContain("useMenuPointer(menuVisible || objectMenuVisible || exitOpen || kioskOpen || hrOpen || floorPicker !== null, worldRef);");
   });
   it("the world stands PLAYER down and leaves a menu's Escape to the menu", () => {
     const w = strip("src/dev/vo3d/app/world.ts");

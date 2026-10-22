@@ -345,12 +345,20 @@ export const CABINET_L_APPROACH: ApproachCapability = { point: { x: 540, z: 74 }
 export const CABINET_R_APPROACH: ApproachCapability = { point: { x: mirrorX(540), z: 74 }, yaw: FACING_YAW.north, label: "Trophy cabinet", action: "Read the awards" };
 export const MEDIA_APPROACH: ApproachCapability = { point: { x: AXIS, z: 88 }, yaw: FACING_YAW.north, label: "Executive display", action: "View the display" };
 export const CREDENZA_APPROACH: ApproachCapability = { point: { x: 570, z: 240 }, yaw: FACING_YAW.south, label: "Display credenza", action: "Take a closer look" };
+/** HR SERVICES — the VISITOR side of the HR workstation, kept apart from the chair's own Sit. The long desk
+ *  backs onto the south wall (298 vs 301), so the one side a visitor can stand at is the room side of the
+ *  return: the lane between it (z 218) and the visitor chairs, facing south across the return at the HR seat.
+ *  x 868 sits between two visitor stand points (851.90 / 876.53 at z 188) and more than FIXTURE_ZONE (20)
+ *  from both, so standing to sit in a visitor chair never offers HR Services instead; the workstation seat's
+ *  own stand point (816, 258) is 74 away, past REACH, so it never offers it either. */
+export const HR_SERVICES_APPROACH: ApproachCapability = { point: { x: 868, z: 207 }, yaw: FACING_YAW.south, label: "HR Services", action: "Open HR Services" };
 
 export const CABINET_L_INTERACTION_ID = `${EXECUTIVE_ROOM_ID}/cabinet-left-interaction`;
 export const CABINET_R_INTERACTION_ID = `${EXECUTIVE_ROOM_ID}/cabinet-right-interaction`;
 export const MEDIA_INTERACTION_ID = `${EXECUTIVE_ROOM_ID}/media-interaction`;
 export const CREDENZA_INTERACTION_ID = `${EXECUTIVE_ROOM_ID}/credenza-interaction`;
-export const EXECUTIVE_APPROACH_IDS = [CABINET_L_INTERACTION_ID, CABINET_R_INTERACTION_ID, MEDIA_INTERACTION_ID, CREDENZA_INTERACTION_ID];
+export const HR_SERVICES_INTERACTION_ID = `${EXECUTIVE_ROOM_ID}/hr-services-interaction`;
+export const EXECUTIVE_APPROACH_IDS = [CABINET_L_INTERACTION_ID, CABINET_R_INTERACTION_ID, MEDIA_INTERACTION_ID, CREDENZA_INTERACTION_ID, HR_SERVICES_INTERACTION_ID];
 
 // ---- the south entrance ---------------------------------------------------------------------------
 /** Bi-parting glass, on the SAME SlidingDoor controller Reception's entrance uses: the west panel drives
@@ -466,7 +474,7 @@ export function executiveRoomEntities(): Entity[] {
 }
 
 /** Hang the capabilities on the entities above: MOVABLE seating on the three task chairs, FIXED lounge
- *  seating on the sofas / armchairs / visitor chairs, four walk-up points and the bi-parting entrance.
+ *  seating on the sofas / armchairs / visitor chairs, five walk-up points and the bi-parting entrance.
  *  No geometry, no transform and no id changes. */
 export function withExecutiveInteractions(entities: Entity[]): Entity[] {
   const find = (id: string): Entity => {
@@ -488,6 +496,8 @@ export function withExecutiveInteractions(entities: Entity[]): Entity[] {
   entities.push(approachEntity(CABINET_R_INTERACTION_ID, "exec-cabinet-right", CABINET_R_APPROACH));
   entities.push(approachEntity(MEDIA_INTERACTION_ID, "exec-media-wall", MEDIA_APPROACH));
   entities.push(approachEntity(CREDENZA_INTERACTION_ID, "exec-credenza-sw", CREDENZA_APPROACH));
+  // the whole L (long desk, nameplate, return) is the HR desk a click means; the chair stays its own Sit
+  entities.push(approachEntity(HR_SERVICES_INTERACTION_ID, "exec-workstation-se", HR_SERVICES_APPROACH));
   const leaf = { kind: "glass-door-leaf", roomId: EXECUTIVE_ROOM_ID, source: { baked: true } as const };
   entities.push({
     ...leaf, id: DOOR_WEST_ID,
