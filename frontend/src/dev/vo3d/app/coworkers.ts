@@ -48,7 +48,8 @@ import type { Facing, Vec2 } from "../core/coords";
  *  default for every walk V1 itself publishes; "linear" is a constant-speed sample of continuous free
  *  movement, which must not be eased or the body halts at both ends of every leg. A local vocabulary
  *  rather than a type import, so the world's module graph stays free of V1 (app/world.ts's rule). */
-export type Vo3dWalkPacing = "eased" | "linear";
+/** "decel" (V2 only): a leg the body braked in out of a run — replayed slowing down, with the braking pose */
+export type Vo3dWalkPacing = "eased" | "linear" | "decel";
 
 export interface Vo3dCoworkerWalk {
   /** V1's own movement id. The world starts a replay when this changes and ignores a repeat of it, so a
@@ -136,6 +137,14 @@ export interface Vo3dCoworker {
    *  replacement for the stable fact — which is what makes a late, lost or superseded arrival recoverable
    *  rather than a body stranded wherever the replay happened to run out. */
   walk?: Vo3dCoworkerWalk;
+  /** PARKOUR V1 — how high this person's feet stand (a furniture top), as their V2 session published it: the
+   *  walk's own when one is in flight, else where they came to rest. A HINT ONLY — the world honours it solely
+   *  where it matches a real standable top at the body's position (world/standables); absent = the floor. */
+feet?: number;
+  /** PARKOUR V3 — a ladder or zipline this person is on RIGHT NOW (the snapshot a late joiner receives, and the live
+   *  relay): the route, which way, how far along it started, how long ago it started (server clock), and the relay's
+   *  identity so it is applied once. Absent = none. */
+  traversal?: { routeId: string; dir: "a" | "b"; p0: number; elapsedMs: number; key: string };
   /** PHASE 6C — the V2 SEAT ANCHOR this person is sitting in (app/seats.ts ids), when V1's stable state
    *  says "sitting" with a seat key the mapping (adapters/v1Seats) identifies, and no walk is in flight.
    *  Absent for everybody standing, and for a sitter in a chair V2 cannot identify — who is then drawn

@@ -53,7 +53,8 @@ import { StaleSessionRecovery } from "../../../components/OfficeMap/checkout/Sta
 // have to be the SAME Chat and Call the interaction card dispatches, not a second pair that drifts. See
 // Vo3dHud.tsx for what the dock itself carries and what it deliberately leaves out.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Vo3dCoworkerSelection, Vo3dScreenAnchor } from "./interactions";
+import type { Vo3dCoworkerSelection, Vo3dObjectSelection, Vo3dScreenAnchor } from "./interactions";
+import { WorldActionMenu } from "../../../components/OfficeMap/WorldActionMenu";
 import type { Vo3dWorld } from "./world";
 import { physicallyInMeeting } from "./meetingArrival";
 import { CoworkerActionMenu, type Vo3dCoworkerAction } from "./CoworkerActionMenu";
@@ -66,9 +67,14 @@ import { roomLayers, FRAME_WIDTH } from "../../../data/office-layout";
 import { emailKey, selfEmailKey } from "../adapters/v1Coworkers";
 import { KIOSK_INTERACTION_ID } from "../rooms/reception";
 import { Vo3dKioskCard, type Vo3dKioskState } from "./Vo3dKioskCard";
+import { HR_SERVICES_INTERACTION_ID } from "../rooms/executive";
+import { Vo3dHrServices } from "./Vo3dHrServices";
 import { attendanceService } from "../../../services/attendance";
 import { getCurrentUserId } from "../../../auth/useAuthGate";
 import { Vo3dExitCard } from "./Vo3dExitCard";
+import { Vo3dFloorPicker } from "./Vo3dFloorPicker";
+import { useMenuPointer } from "./menuPointer";
+import { FLOORS, FLOOR_ORDER, elevatorFloorRows, type Vo3dFloorId } from "./floors";
 import { Vo3dCheckoutPanels } from "./Vo3dCheckoutPanels";
 import panelStyles from "./Vo3dCheckoutPanels.module.css";
 import { manilaWorkDate, useCheckoutFlow } from "../../../components/OfficeMap/useCheckoutFlow";
@@ -98,13 +104,14 @@ import {
 import { resolveCharacterAnimState } from "../../../render3d/characterAnimationState";
 import { CLIP_TALK_AGREE } from "../adapters/v1Avatar";
 import { useAutoStatusDetection } from "../../../services/presence/useAutoStatusDetection";
+import { useAwayModeSync } from "../../../services/toucan/awayMode";
 import { isConnectedToMedia } from "../../../services/call/callStore";
 import type { ChatMessage } from "../../../services/chat";
 import { isAuthoredMessage } from "../../../services/chat/types";
 import { messageSpeechText } from "../../../services/chat/stickers";
 import { officePeopleToLayers } from "../../../data/rosterLayers";
 import { ACTIVE_DETAIL_STATUSES, resolvePeerStatus, STATUS_META, type OfficeStatus } from "../../../services/presence/status";
-import { useDndEmails, useSelfDndPublication } from "../../../services/presence/dndClient";
+import { useDndEmails, usePeerStatuses, useSelfDndPublication, useSelfStatusPublication } from "../../../services/presence/dndClient";
 import {
   emitGlobalChatActive,
   useGlobalChatActiveEmails,
@@ -187,6 +194,7 @@ import { TOUCAN_AVATAR_GLYPH } from "../../../services/chat/toucanSender";
 import { jobOpen, latestDelivered, readThrough, type ConversationEntry } from "../world/agentJob";
 import { stepFor } from "../world/jobStatusLine";
 import { MEETING_ROOMS } from "../rooms/floor2Meeting";
+import { useFirstTimeCharacterRouting } from "../../../components/OfficeMap/CharacterStudio/useFirstTimeCharacterRouting";
 /** Every Meeting Floor room's meeting id (`mf-<slug>`) — participation in one of these is IN MEETING. */
 const ROOM_MEETING_IDS: ReadonlySet<string> = new Set(MEETING_ROOMS.map((r) => r.meetingId));
 const roomIdOfMeeting = (meetingId: string): string | null => MEETING_ROOMS.find((r) => r.meetingId === meetingId)?.id ?? null;
@@ -350,6 +358,12 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   // Cave portal are. `kioskPhase` is THIS CLIENT'S request state and nothing more — what is TRUE about
   // the work session is `attendance`, which comes from V1 and is never inferred from a button press.
   const [kioskOpen, setKioskOpen] = useState(false);
+  /** the Executive Room HR desk's HR Services panel — opened by walking up to its visitor side, from either view */
+  const [hrOpen, setHrOpen] = useState(false);
+  // INTERACTION V2 — THE OBJECT CARD (Office View): a clicked chair, desk, lift or fixture, and where it is on
+  // screen right now (it follows the object through a pan, as a person's card follows them)
+  const [objectSel, setObjectSel] = useState<Vo3dObjectSelection | null>(null);
+  const [objectAnchor, setObjectAnchor] = useState<Vo3dScreenAnchor | null>(null);
   const [kioskAnchor, setKioskAnchor] = useState<Vo3dScreenAnchor | null>(null);
   const [kioskPhase, setKioskPhase] = useState<"idle" | "submitting" | "failed">("idle");
   /** THE DOUBLE-SUBMIT GUARD, a ref and not state for the reason V1's own `checkinRequestPendingRef` is
@@ -400,6 +414,8 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   const timeInMs = liveTimeInMs ?? (checkoutFlow.state === "IDLE" ? null : lastSessionStartRef.current);
   const [exitOpen, setExitOpen] = useState(false);
   const [exitAnchor, setExitAnchor] = useState<Vo3dScreenAnchor | null>(null);
+  /** THE ELEVATOR'S FLOOR PANEL, open on the floor it was asked from (world requestElevator) */
+  const [floorPicker, setFloorPicker] = useState<{ from: Vo3dFloorId } | null>(null);
   const [successCardDismissed, setSuccessCardDismissed] = useState(false);
   /** Is V1's checkout flow mid-journey? Read inside the world's own callback, which is bound once and must
    *  not close over a stale value. */
@@ -548,6 +564,8 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     setProfileLanding(landing ?? { tab: "profile", postId: null });
     setProfileEmail(email);
   }, []);
+  // CHARACTER STUDIO (dev-only): someone with no character at all lands on their own Profile, whose panel opens in CREATE
+  useFirstTimeCharacterRouting(self, ready, openProfile);
   /** ROOM DETAILS — the selected room, as the V1 MANIFEST room layer id the world reports. One at a time,
    *  exactly like the selected coworker, and null means the panel is closed. */
   const [roomDetailsId, setRoomDetailsId] = useState<string | null>(null);
@@ -561,6 +579,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   const toastTimerRef = useRef<number | undefined>(undefined);
 
   const dndEmails = useDndEmails();
+  const peerStatuses = usePeerStatuses();   // each connected peer's own effective status (dndClient.ts)
 
   // ---- DND ROOM LOCKS (V1 parity: feature spec sections 2/3/6/7/8/11) ------------------------------
   // WHICH ROOMS ARE LOCKED is V1's rule over V1's feeds — data/roomLock.ts's isRoomLocked over the same
@@ -697,10 +716,10 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     const map: Record<string, OfficeStatus> = {};
     for (const person of people) {
       const key = emailKey(person.email);
-      map[key] = resolvePeerStatus(person.status, dndEmails.has(key), inRoomMeetingEmails.has(key));
+      map[key] = resolvePeerStatus(person.status, dndEmails.has(key), inRoomMeetingEmails.has(key), peerStatuses.get(key) ?? null);
     }
     return map;
-  }, [dndEmails, people, inRoomMeetingEmails]);
+  }, [dndEmails, people, inRoomMeetingEmails, peerStatuses]);
 
   const chatAttention = useMemo(
     () => buildChatAttentionByLayerId({ conversations, selfEmail: self, selfLayerId: self }),
@@ -729,6 +748,9 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     () => spatialSessions.some((s) => s.members.includes(self) && s.members.length >= 2),
     [self, spatialSessions],
   );
+  // Away Mode V1 — while Toucan handles this viewer's messages, their effective status reads AWAY
+  // (mirrored from the server's delegation row; see services/toucan/awayMode.ts).
+  useAwayModeSync();
   useAutoStatusDetection({
     inConversation: inConv,
     offline: !mayEnterOffice(attendance.access),
@@ -854,15 +876,22 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
       // exactly where OfficeMap.tsx emits it: after a finished approach, keyed on the same email. The
       // server still rejects self and non-roster targets.
       onApproachArrived: (email) => emitApproachArrived(email),
-      // PHASE 7E — WALKED UP TO A FIXTURE. Reception's kiosk is the only one that opens anything today;
-      // every other walk-up point is still the ambient "you are here" it has always been.
+      // PHASE 7E — WALKED UP TO A FIXTURE. Reception's kiosk and the Executive Room's HR desk open
+      // something; every other walk-up point is still the ambient "you are here" it has always been.
       onInteractionArrived: (entityId) => {
+        if (entityId === HR_SERVICES_INTERACTION_ID) {
+          setHrOpen(true);
+          return;
+        }
         if (entityId !== KIOSK_INTERACTION_ID) return;
         setKioskPhase("idle");
         setKioskOpen(true);
       },
       // PHASE 7E — they walked up to the exit and the world stopped them. Ask what leaving means.
       onExitIntercepted: () => setExitOpen(true),
+      // THE LIFT ASKS WHERE TO (more than one other floor, or ?liftpicker=1). The panel answers through
+      // useElevator(to) — the world's one ride path — and closing it moves nothing.
+      onElevatorPicker: ({ from }) => setFloorPicker({ from: from as Vo3dFloorId }),
       // …and they walked off without answering. Close the card: the question was about leaving, and they
       // are not leaving. NOTHING is authorised by this, exactly as Cancel authorises nothing — walking
       // back up to the doors asks again.
@@ -893,6 +922,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
       // was picked (a manifest room id, or null for the hall / a person / a fixture / outside); what that
       // room CONTAINS is resolved here from V1's roster, in app/roomDetails.ts.
       onRoomSelected: (roomId) => setRoomDetailsId(roomId),
+      onObjectSelected: (sel) => setObjectSel(sel),
     });
     return () => world.setCoworkerInteractions(null);
   }, [ready, roomNameFor, worldRef]);
@@ -963,6 +993,30 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     return () => cancelAnimationFrame(raf);
   }, [selection?.email, worldRef]);
 
+  // THE OBJECT CARD FOLLOWS ITS OBJECT, through the same loop shape as the person's card above.
+  useEffect(() => {
+    if (!objectSel) {
+      setObjectAnchor(null);
+      return;
+    }
+    let raf = 0;
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const next = worldRef.current?.objectAnchor(objectSel.id) ?? null;
+      setObjectAnchor((prev) => {
+        if (!next) return prev === null ? prev : null;
+        if (prev && prev.visible === next.visible && Math.abs(prev.clientX - next.clientX) < 0.5 && Math.abs(prev.clientY - next.clientY) < 0.5) return prev;
+        return next;
+      });
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [objectSel, worldRef]);
+  const closeObjectMenu = useCallback(() => {
+    setObjectSel(null);
+    worldRef.current?.clearObjectSelection();
+  }, [worldRef]);
+
   // THE KIOSK CARD FOLLOWS THE BODY, for the same reason and through the same loop shape. The employee is
   // standing AT the kiosk when this opens, so their own anchor is the kiosk's position on screen — and it
   // still moves, because the camera does (a pan in OFFICE, every frame in PLAYER). `selfAnchor` is the
@@ -1029,9 +1083,11 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
       });
   }, [attendance]);
 
-  // The exit card follows the body, through the same loop and for the same reason as the kiosk card.
+  // The exit card follows the body, through the same loop and for the same reason as the kiosk card —
+  // and so does the elevator's floor panel, which is the same kind of question asked at a fixture.
+  const selfCardOpen = exitOpen || floorPicker !== null;
   useEffect(() => {
-    if (!exitOpen) {
+    if (!selfCardOpen) {
       setExitAnchor(null);
       return;
     }
@@ -1047,7 +1103,18 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [exitOpen, worldRef]);
+  }, [selfCardOpen, worldRef]);
+
+  // A floor change answers the panel's question for it (a Go Together ride, a restore): close it.
+  useEffect(() => {
+    const world = worldRef.current;
+    if (!ready || !world || !floorPicker) return;
+    let first = true;
+    return world.subscribeFloor(() => {
+      if (first) { first = false; return; }
+      setFloorPicker(null);
+    });
+  }, [ready, worldRef, floorPicker]);
 
   /** THE AI LAB. An authorised departure and nothing else: the exit opens for this one trip, the world is
    *  told where they are going so peers see them arrive there rather than stop at the façade, and the work
@@ -1746,6 +1813,8 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   // edge-trigger contract above lives there once, plus the one case it adds: a mount that already finds
   // a restored DND session publishes TRUE, because the server forgot it when the previous socket left.
   useSelfDndPublication(selfStatus === "DND");
+  // …and the full effective status, so peers see Available / Busy / Break / Lunch / Away / Offline as this client does
+  useSelfStatusPublication(selfStatus);
   // CLEANUP — V1 has no unmount rule here and neither does this: DND is a durable, persisted session
   // (localStorage + expiry), not a window that is open or closed, so leaving the route must NOT tell
   // peers the employee is available again. The server's own disconnect handling owns that.
@@ -2154,6 +2223,11 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
 
   const menuVisible = selection !== null && anchor !== null && anchor.visible;
   const targetSession = selection ? sessionForEmail(selection.email) : undefined;
+  // THE INTERACTION MENUS, ONE MOUSE RULE (app/menuPointer): while any is up, PLAYER's look, clicks and
+  // verbs stand down and a locked pointer is released so the menu can be clicked at once; closing gives
+  // the pointer back when it was ours to give.
+  const objectMenuVisible = objectSel !== null && objectAnchor !== null && objectAnchor.visible;
+  useMenuPointer(menuVisible || objectMenuVisible || exitOpen || kioskOpen || hrOpen || floorPicker !== null, worldRef);
 
   return (
     <>
@@ -2175,12 +2249,42 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
           targetInActiveCall={callParticipantsFor(callState, activeSpatialSession?.sessionId ?? null).includes(selection.email)}
         />
       )}
+      {objectMenuVisible && objectSel && objectAnchor && (
+        <WorldActionMenu
+          anchor={{ clientX: objectAnchor.clientX, clientY: objectAnchor.clientY }}
+          onClose={closeObjectMenu}
+          ariaLabel={`Actions for ${objectSel.title}`}
+          title={objectSel.title}
+          subtitle={objectSel.subtitle}
+          items={objectSel.actions.map((a) => ({
+            key: a.key,
+            label: a.label,
+            onSelect: () => {
+              const id = objectSel.id;
+              setObjectSel(null);
+              worldRef.current?.runObjectAction(id, a.key);
+            },
+          }))}
+        />
+      )}
       {kioskOpen && kioskAnchor?.visible && (
         <Vo3dKioskCard
           state={kioskState}
           anchor={{ clientX: kioskAnchor.clientX, clientY: kioskAnchor.clientY }}
           onCheckIn={runCheckIn}
           onClose={() => setKioskOpen(false)}
+        />
+      )}
+      {hrOpen && <Vo3dHrServices onClose={() => setHrOpen(false)} />}
+      {floorPicker && (
+        <Vo3dFloorPicker
+          rows={elevatorFloorRows(floorPicker.from, FLOOR_ORDER, FLOORS)}
+          anchor={exitAnchor?.visible ? { clientX: exitAnchor.clientX, clientY: exitAnchor.clientY } : null}
+          onSelect={(to) => {
+            setFloorPicker(null);
+            worldRef.current?.useElevator(to as Vo3dFloorId);
+          }}
+          onClose={() => setFloorPicker(null)}
         />
       )}
       {exitOpen && exitAnchor?.visible && (

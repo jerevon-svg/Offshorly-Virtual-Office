@@ -22,7 +22,10 @@ describe("MockTeamMapService", () => {
   it("takes each department from the mock office roster by email, never by cast position", async () => {
     const floor = await mockOfficeService.getFloor();
     expect(floor.length).toBeGreaterThan(0);
-    for (const rosterPerson of floor) {
+    // The map cast is the sprite manifest; roster people with no sprite layer (HumanBase-only, e.g. Esson) are not on it.
+    const NO_SPRITE_LAYER = new Set(["esson@offshorly.com"]);
+    expect(characterLayers.some((l) => l.id === "esson")).toBe(false);
+    for (const rosterPerson of floor.filter((p) => !NO_SPRITE_LAYER.has(p.user_email.toLowerCase()))) {
       const mapPerson = people.find((p) => p.email.toLowerCase() === rosterPerson.user_email.toLowerCase());
       expect(mapPerson, rosterPerson.user_email).toBeDefined();
       expect(mapPerson!.department_name).toBe(rosterPerson.department_name);

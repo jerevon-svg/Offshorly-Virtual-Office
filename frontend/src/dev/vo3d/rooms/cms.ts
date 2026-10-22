@@ -292,8 +292,8 @@ function deskChairSeat(
  *  row 25); the OUTER one of each pair is taken, nudged 4 units inside its cell so a body at NAV_RADIUS
  *  clears the chair it is walking up to. */
 export const LEAD_SEATS: SeatCapability[] = [
-  deskChairSeat(LEAD_CHAIRS[0], { x: 1220, z: 406 }, 412, -1, LEAD_PULL, CMS_LEAD_CHAIR),
-  deskChairSeat(LEAD_CHAIRS[1], { x: 1356, z: 406 }, 412, -1, LEAD_PULL, CMS_LEAD_CHAIR),
+  { ...deskChairSeat(LEAD_CHAIRS[0], { x: 1220, z: 406 }, 412, -1, LEAD_PULL, CMS_LEAD_CHAIR), workstation: true },
+  { ...deskChairSeat(LEAD_CHAIRS[1], { x: 1356, z: 406 }, 412, -1, LEAD_PULL, CMS_LEAD_CHAIR), workstation: true },
 
 ];
 
@@ -312,7 +312,7 @@ export const MEMBER_CHAIRS = [
 ] as const;
 
 export const MEMBER_SEATS: SeatCapability[] = MEMBER_CHAIRS.map((c) =>
-  deskChairSeat(c, { ...c.approach }, c.preSeatZ, 1, c.row === 0 ? FRONT_PULL : BACK_PULL, CMS_TASK_CHAIR));
+  ({ ...deskChairSeat(c, { ...c.approach }, c.preSeatZ, 1, c.row === 0 ? FRONT_PULL : BACK_PULL, CMS_TASK_CHAIR), workstation: true }));
 
 export const leadChairId = (i: number): string => `${CMS_ROOM_ID}/${LEAD_CHAIRS[i].id}`;
 export const memberChairId = (i: number): string => `${CMS_ROOM_ID}/${MEMBER_CHAIRS[i].id}`;

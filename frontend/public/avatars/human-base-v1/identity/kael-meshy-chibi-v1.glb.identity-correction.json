@@ -1,0 +1,269 @@
+{
+ "who": "kael",
+ "stage0": "kael",
+ "plan": {
+  "apply": true,
+  "worst": 0.0899,
+  "levels": [
+   [
+    "eye",
+    1,
+    "LOCKED (canonical skull)"
+   ],
+   [
+    "eyeSpacing",
+    1,
+    "CONSTRAINED"
+   ],
+   [
+    "cheek",
+    0.9721,
+    "CONSTRAINED"
+   ],
+   [
+    "nose",
+    1.0899,
+    "OBSERVED"
+   ],
+   [
+    "mouth",
+    1.0704,
+    "OBSERVED"
+   ],
+   [
+    "jaw",
+    1.0303,
+    "OBSERVED"
+   ],
+   [
+    "chin",
+    0.9965,
+    "OBSERVED"
+   ]
+  ]
+ },
+ "before": [
+  {
+   "k": "frame.eyeLevelW_IOD",
+   "current": 2.1481,
+   "target": 2.1337,
+   "err": 0.7,
+   "flag": "CONSTRAINED",
+   "weak": false,
+   "out": false
+  },
+  {
+   "k": "frame.cheekW_IOD",
+   "current": 2.2005,
+   "target": 2.139,
+   "err": 2.9,
+   "flag": "CONSTRAINED",
+   "weak": false,
+   "out": false
+  },
+  {
+   "k": "frame.noseLevelW_IOD",
+   "current": 1.7641,
+   "target": 1.9227,
+   "err": -8.2,
+   "flag": "OBSERVED",
+   "weak": false,
+   "out": true
+  },
+  {
+   "k": "frame.mouthLevelW_IOD",
+   "current": 1.5578,
+   "target": 1.6674,
+   "err": -6.6,
+   "flag": "OBSERVED",
+   "weak": false,
+   "out": true
+  },
+  {
+   "k": "frame.jawW_IOD",
+   "current": 1.1054,
+   "target": 1.1388,
+   "err": -2.9,
+   "flag": "OBSERVED",
+   "weak": false,
+   "out": false
+  },
+  {
+   "k": "frame.chinW_IOD",
+   "current": 0.674,
+   "target": 0.6716,
+   "err": 0.4,
+   "flag": "OBSERVED",
+   "weak": false,
+   "out": false
+  },
+  {
+   "k": "frame.templeW_IOD",
+   "current": 2.024,
+   "target": 2.0326,
+   "err": -0.4,
+   "flag": "STYLE_PRIOR",
+   "weak": true,
+   "out": false
+  },
+  {
+   "k": "frame.faceH_IOD",
+   "current": 1.2899,
+   "target": 1.2437,
+   "err": 3.7,
+   "flag": "observed",
+   "weak": false,
+   "out": false
+  },
+  {
+   "k": "frame.chinRound25",
+   "current": 0.886,
+   "target": 0.8919,
+   "err": -0.6,
+   "abs": true,
+   "flag": "observed",
+   "out": false
+  },
+  {
+   "k": "frame.chinRound50",
+   "current": 0.734,
+   "target": 0.7498,
+   "err": -1.6,
+   "abs": true,
+   "flag": "observed",
+   "out": false
+  },
+  {
+   "k": "frame.chinRound75",
+   "current": 0.4961,
+   "target": 0.5785,
+   "err": -8.2,
+   "abs": true,
+   "flag": "observed",
+   "out": true
+  },
+  {
+   "k": "v.eyeNose_H",
+   "current": 0.3609,
+   "target": 0.3614,
+   "err": -0.1,
+   "flag": "observed",
+   "weak": false,
+   "out": false
+  },
+  {
+   "k": "v.noseMouth_H",
+   "current": 0.2273,
+   "target": 0.2259,
+   "err": 0.6,
+   "flag": "observed",
+   "weak": false,
+   "out": false
+  },
+  {
+   "k": "v.mouthChin_H",
+   "current": 0.4118,
+   "target": 0.4128,
+   "err": -0.2,
+   "flag": "observed",
+   "weak": false,
+   "out": false
+  },
+  {
+   "k": "v.noseChin_H",
+   "current": 0.6391,
+   "target": 0.6386,
+   "err": 0.1,
+   "flag": "observed",
+   "weak": false,
+   "out": false
+  },
+  {
+   "k": "v.eyeMouth_H",
+   "current": 0.5882,
+   "target": 0.5872,
+   "err": 0.2,
+   "flag": "observed",
+   "weak": false,
+   "out": false
+  },
+  {
+   "k": "h.IOD_cheekW",
+   "current": 0.4544,
+   "target": 0.4675,
+   "err": -2.8,
+   "flag": "CONSTRAINED",
+   "weak": false,
+   "out": false
+  },
+  {
+   "k": "x.noseMouth_noseChin",
+   "current": 0.3557,
+   "target": 0.3537,
+   "err": 0.6,
+   "flag": "observed",
+   "weak": false,
+   "out": false
+  },
+  {
+   "k": "x.mouthChin_noseChin",
+   "current": 0.6443,
+   "target": 0.6463,
+   "err": -0.3,
+   "flag": "observed",
+   "weak": false,
+   "out": false
+  },
+  {
+   "k": "x.eyeNose_eyeChin",
+   "current": 0.3609,
+   "target": 0.3614,
+   "err": -0.1,
+   "flag": "observed",
+   "weak": false,
+   "out": false
+  }
+ ],
+ "stats": {
+  "baked_skullbase": {
+   "moved": 414,
+   "maxShift": 0.0283
+  },
+  "baked_holefill": {
+   "moved": 15,
+   "maxShift": 0.0044
+  },
+  "baked_interior": {
+   "moved": 5576,
+   "maxShift": 0.0272
+  },
+  "face_eyes": {
+   "moved": 1792,
+   "maxShift": 0.0013
+  },
+  "face_mouth": {
+   "moved": 1640,
+   "maxShift": 0.0112
+  },
+  "identity_head": {
+   "moved": 32063,
+   "maxShift": 0.0299
+  },
+  "identity_hair_scalp": {
+   "moved": 3916,
+   "maxShift": 0.0191
+  },
+  "identity_hair_main": {
+   "moved": 50,
+   "maxShift": 0.001
+  },
+  "identity_hair_fringe": {
+   "moved": 3861,
+   "maxShift": 0.009
+  },
+  "identity_hair_base": {
+   "moved": 130,
+   "maxShift": 0.0077
+  }
+ }
+}

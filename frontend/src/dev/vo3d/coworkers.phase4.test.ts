@@ -64,10 +64,23 @@ describe("resolveVo3dCoworkers", () => {
   });
 
   it("buckets an employee with no consolidated GLB instead of substituting somebody else's body", () => {
-    // Lui is the real case: a real employee with a real V1 sprite set and no 3D character.
-    const { coworkers, missingAvatar } = resolveVo3dCoworkers([ALEX, LUI], NOBODY_OFFLINE, "");
+    // Lui is the real case: a real employee with a real V1 sprite set and no legacy 3D character. His only body is
+    // HumanBase, so the `?humanbase=0` rollback returns him to the honest missing-avatar state.
+    window.history.replaceState({}, "", "/?humanbase=0");
+    try {
+      const { coworkers, missingAvatar } = resolveVo3dCoworkers([ALEX, LUI], NOBODY_OFFLINE, "");
+      expect(coworkers.map((c) => c.email)).toEqual(["alex@offshorly.com"]);
+      expect(missingAvatar).toEqual(["Lui"]);
+    } finally { window.history.replaceState({}, "", "/"); }
+  });
+
+  it("a HumanBase-only employee whose HumanBase body is NOT enabled (fail-closed) stays missing, never someone else's body", () => {
+    // Esson: his only body is a HumanBase head that is approved for local preview but NOT promoted (not in HUMANBASE_ENABLED).
+    // (This used Lui until his promotion on 2026-10-19 made his body enabled.)
+    const ESSON = person("esson@offshorly.com", { avatarId: "esson", displayName: "Esson", roomId: "dev-team" });
+    const { coworkers, missingAvatar } = resolveVo3dCoworkers([ALEX, ESSON], NOBODY_OFFLINE, "");
     expect(coworkers.map((c) => c.email)).toEqual(["alex@offshorly.com"]);
-    expect(missingAvatar).toEqual(["Lui"]);
+    expect(missingAvatar).toEqual(["Esson"]);
   });
 
   it("buckets an employee with no registry mapping at all", () => {

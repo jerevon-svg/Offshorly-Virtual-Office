@@ -86,3 +86,59 @@ export function riddenScooterOrigin(pos: Vec2, h: number): Vec2 {
   const f = SCOOTER_GEOMETRY.footZ;
   return { x: pos.x + f * Math.sin(h), z: pos.z - f * Math.cos(h) };
 }
+
+// ============================= WHO HAS WHICH SCOOTER (S1) =======================================
+// The server decides (backend app/services/scooter_registry.py, by these same dock ids); the world asks
+// through the host and draws what it is told. Types only — no transport lives here.
+
+/** the server's states: in the rack, ridden, standing away from the rack, fallen (reserved) */
+export type ScooterServerState = "docked" | "ridden" | "standing" | "fallen";
+
+/** ONE SCOOTER as the world needs it: its state, and whether THIS employee is the rider */
+export interface Vo3dScooterState {
+  id: string;
+  state: ScooterServerState;
+  mine: boolean;
+  /** S5 — where a fallen (or standing) scooter lies, and the way it points (the ride heading) */
+  at?: { x: number; z: number; yaw: number } | null;
+  /** S5 — the accident a fallen scooter belongs to */
+  accident?: string | null;
+}
+
+// ---- S2: the rider's pose on the wire (app/riderStream sends and interpolates it) ----------------------
+/** what a rider looks like at one moment: on the ground at (x, z), deck at y, pointing `heading` (the ride
+ *  convention: forward = (sin h, -cos h)), at `speed`, rolled by `lean`, pitched by `pitch` */
+export interface RiderPose {
+  x: number; z: number; y: number;
+  heading: number; speed: number; lean: number; pitch: number;
+  /** S3 drifting — reserved, passed through */
+  fx?: ScooterFx;
+}
+
+/** RESERVED FOR S3 DRIFTING: the same keys the server validates (scooter_registry.valid_pose) */
+export interface ScooterFx { drift?: -1 | 0 | 1; charge?: number; slip?: number; boost?: boolean }
+
+/** one sample on the wire, as sent (the server adds `rider` and `serverTime` when it relays it) */
+export interface ScooterPoseSample extends RiderPose {
+  scooterId: string;
+  seq: number;
+  /** the sender's clock, ms */
+  t: number;
+}
+export interface RelayedScooterPose extends ScooterPoseSample { rider: string }
+
+/** HOW THE WORLD ASKS. `claim` resolves once the server has answered (or the ask timed out); nothing rides
+ *  before it says yes. `release` is fire-and-forget: the server broadcasts the result to everybody. */
+export interface Vo3dScooterAuthority {
+  /** `at` (S7): riding the scooter this rider lifted, from where they stand beside it */
+  claim(id: string, at?: { x: number; z: number } | null): Promise<{ ok: boolean; reason?: string }>;
+  release(id: string): void;
+  /** S2 — this body's ride, ~10 a second, while it holds the scooter (the server relays it to everybody) */
+  sendPose?(sample: ScooterPoseSample): void;
+  /** S5 — this rider hit a car: the server's verdict (a confirmed one also arrives as the scooter falling) */
+  reportAccident?(r: { scooterId: string; loop: string; vehicle: number; x: number; z: number; heading: number; speed: number; t: number; closing: number }): Promise<{ ok: boolean; reason?: string }>;
+  /** S6 — how far this rider's world lets their own accident's throws go (world/accidentMotion chooseReach) */
+  reportAccidentReach?(id: string, reach: { rider: { k: number; turn: number }; scooter: { k: number; turn: number } }): void;
+  /** S7 — E beside this rider's own fallen scooter: lift it (the server's verdict; a granted lift arrives for everybody) */
+  liftAccident?(id: string, at: { x: number; z: number }): Promise<{ ok: boolean; reason?: string }>;
+}

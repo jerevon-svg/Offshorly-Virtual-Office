@@ -118,3 +118,38 @@ describe("TimeLogForm time spent (HH:MM)", () => {
     expect((screen.getByLabelText("Hours") as HTMLInputElement).value).toBe("");
   });
 });
+
+describe("TimeLogForm allocation summary", () => {
+  function renderAt(sessionMinutes: number, workedLabel: string, entries: TimeLogEntry[]) {
+    render(
+      <TimeLogForm
+        entries={entries}
+        projects={[{ id: "p1", name: "Project One" }]}
+        tasks={[{ id: "t1", projectId: "p1", name: "Task One" }]}
+        allocation={validateAllocation(sessionMinutes, entries)}
+        workedLabel={workedLabel}
+        error={null}
+        onUpdateEntry={vi.fn()}
+        onAddEntry={vi.fn()}
+        onRemoveEntry={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    );
+    return screen.getByTestId("allocation-line");
+  }
+
+  it("shows checked-in, logged and not-logged figures, neutral when under-allocated", () => {
+    const line = renderAt(572, "9h 32m", [entry({ timeSpentMinutes: 480 })]);
+    expect(line.textContent).toContain("Checked in for: 9h 32m");
+    expect(line.textContent).toContain("Logged to projects: 8h 0m");
+    expect(line.textContent).toContain("Not logged: 1h 32m");
+    expect(line.className).not.toMatch(/warn/);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("warns when logged time exceeds the checked-in time", () => {
+    const line = renderAt(480, "8h 0m", [entry({ timeSpentMinutes: 540 })]);
+    expect(line.className).toMatch(/warn/);
+    expect(screen.getByRole("alert").textContent).toMatch(/more than your checked-in time/);
+  });
+});

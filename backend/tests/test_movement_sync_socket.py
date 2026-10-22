@@ -675,6 +675,11 @@ async def test_pacing_is_relayed_on_start_and_in_snapshot_and_defaults_to_null(s
     await a.emit("walk_started", _walk_started_payload(movementId="m3"))
     assert (await started_task)["pacing"] is None
 
+    # A sprint's skid: the V2 office's braking leg, relayed so peers replay it slowing down.
+    started_task = asyncio.ensure_future(_wait_for_event(b, "peer_walk_started"))
+    await a.emit("walk_started", _walk_started_payload(movementId="m4", pacing="decel"))
+    assert (await started_task)["pacing"] == "decel"
+
     await a.disconnect()
     await b.disconnect()
     await c.disconnect()

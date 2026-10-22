@@ -262,6 +262,7 @@ export function gamingChairSeat(i: number): SeatCapability {
     sitDepth: 3.5,
     seatedYaw: FACING_YAW.south, // the monitors are south of the chair
     timings: { pullMs: 820, sitMs: 650, slideMs: 700, standMs: 650, returnMs: 820 },
+    workstation: true, // a gaming station's keyboard is typed on like any desk's
   };
 }
 export const gamingChairId = (i: number): string => `${GAMING_ROOM_ID}/gaming-chair-${i}`;

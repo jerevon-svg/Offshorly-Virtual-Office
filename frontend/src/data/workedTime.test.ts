@@ -5,6 +5,7 @@ import {
   computeWorkedMinutes,
   formatDuration,
   splitDuration,
+  summarizeCheckout,
   validateAllocation,
 } from "./workedTime";
 import type { TimeLogEntry } from "../services/zoho/types";
@@ -57,7 +58,7 @@ describe("validateAllocation", () => {
     const result = validateAllocation(minutes, [
       entry({ category: "Meetings", timeSpentMinutes: minutes, workDescription: "work" }),
     ]);
-    expect(result.isFullyAllocated).toBe(minutes === 1440);
+    expect(result.canSubmit).toBe(minutes === 1440);
     expect(result.errors).toEqual(minutes === 1440 ? [] : [
       "Entry 1: max 24h per entry; add another entry for the rest",
     ]);
@@ -80,15 +81,15 @@ describe("validateAllocation", () => {
         entry({ category: "Meetings", timeSpentMinutes, workDescription: "work" }),
       ));
       expect(result.errors).toEqual([]);
-      expect(result.isFullyAllocated).toBe(true);
-      expect(result.remainingMinutes).toBe(0);
+      expect(result.canSubmit).toBe(true);
+      expect(result.unallocatedMinutes).toBe(0);
     },
   );
 
   it("errors when there are no entries", () => {
     const result = validateAllocation(120, []);
     expect(result.errors).toContain("Add at least one time log entry.");
-    expect(result.isFullyAllocated).toBe(false);
+    expect(result.canSubmit).toBe(false);
   });
 
   it("errors when entry has neither project nor category", () => {
@@ -117,30 +118,43 @@ describe("validateAllocation", () => {
     expect(result.errors.some((e) => e.includes("work description"))).toBe(true);
   });
 
-  it("errors when total exceeds worked minutes", () => {
+  it("errors when total exceeds checked-in minutes, and cannot submit (decision C)", () => {
     const result = validateAllocation(60, [
       entry({ category: "Meetings", timeSpentMinutes: 90, workDescription: "x" }),
     ]);
-    expect(result.errors.some((e) => e.includes("exceeds worked time"))).toBe(true);
-    expect(result.remainingMinutes).toBe(-30);
+    expect(result.errors.some((e) => e.includes("exceeds your checked-in time"))).toBe(true);
+    expect(result.isOverAllocated).toBe(true);
+    expect(result.canSubmit).toBe(false);
+    expect(result.unallocatedMinutes).toBe(0);
   });
 
-  it("errors when total is under worked minutes (must fully allocate)", () => {
+  it("an invalid entry blocks submission even when the total fits", () => {
+    const result = validateAllocation(480, [
+      entry({ projectId: "p1", taskId: null, timeSpentMinutes: 60, workDescription: "x" }),
+    ]);
+    expect(result.isOverAllocated).toBe(false);
+    expect(result.canSubmit).toBe(false);
+  });
+
+  it("allows under-allocation and reports the remainder as unallocated (decision A)", () => {
     const result = validateAllocation(60, [
       entry({ category: "Meetings", timeSpentMinutes: 30, workDescription: "x" }),
     ]);
-    expect(result.errors.some((e) => e.includes("must fully account for worked time"))).toBe(true);
-    expect(result.remainingMinutes).toBe(30);
+    expect(result.errors).toEqual([]);
+    expect(result.canSubmit).toBe(true);
+    expect(result.loggedMinutes).toBe(30);
+    expect(result.unallocatedMinutes).toBe(30);
   });
 
-  it("is fully allocated with no errors when a valid entry exactly covers worked minutes", () => {
+  it("is valid with zero unallocated when a valid entry exactly covers the session", () => {
     const result = validateAllocation(60, [
       entry({ projectId: "p1", taskId: "t1", timeSpentMinutes: 60, workDescription: "did work" }),
     ]);
     expect(result.errors).toEqual([]);
-    expect(result.isFullyAllocated).toBe(true);
-    expect(result.totalLoggedMinutes).toBe(60);
-    expect(result.remainingMinutes).toBe(0);
+    expect(result.canSubmit).toBe(true);
+    expect(result.sessionMinutes).toBe(60);
+    expect(result.loggedMinutes).toBe(60);
+    expect(result.unallocatedMinutes).toBe(0);
   });
 
   it("sums multiple valid entries correctly", () => {
@@ -148,8 +162,54 @@ describe("validateAllocation", () => {
       entry({ projectId: "p1", taskId: "t1", timeSpentMinutes: 60, workDescription: "a" }),
       entry({ category: "Meetings", timeSpentMinutes: 30, workDescription: "b" }),
     ]);
-    expect(result.totalLoggedMinutes).toBe(90);
-    expect(result.isFullyAllocated).toBe(true);
+    expect(result.loggedMinutes).toBe(90);
+    expect(result.canSubmit).toBe(true);
+  });
+
+  // The approved acceptance matrix. No 8-hour rule in either direction: below 8h is allowed, above 8h
+  // is allowed, and the only total-level limit is the checked-in time itself.
+  const valid = (minutes: number) =>
+    entry({ projectId: "p1", taskId: "t1", timeSpentMinutes: minutes, workDescription: "w" });
+  it.each([
+    ["9h 32m checked in / 8h logged", 572, [480], true, 92],
+    ["8h checked in / 8h logged", 480, [480], true, 0],
+    ["8h checked in / 6h logged", 480, [360], true, 120],
+    ["8h checked in / 9h logged (blocked)", 480, [540], false, 0],
+    ["10h checked in / 9h logged", 600, [300, 240], true, 60],
+    ["2h checked in / 1h logged (well under 8h)", 120, [60], true, 60],
+  ])("%s", (_label, session, logged, ok, unallocated) => {
+    const result = validateAllocation(session, logged.map(valid));
+    expect(result.canSubmit).toBe(ok);
+    expect(result.unallocatedMinutes).toBe(unallocated);
+  });
+
+  it("8h checked in / 0h logged is blocked (decision B: zero-hour checkout is deferred)", () => {
+    expect(validateAllocation(480, []).canSubmit).toBe(false);
+  });
+
+  it("a growing session never invalidates a valid log — it only grows the unallocated figure", () => {
+    const entries = [valid(480)];
+    const before = validateAllocation(480, entries);
+    const after = validateAllocation(482, entries);
+    expect(before.canSubmit).toBe(true);
+    expect(after.canSubmit).toBe(true);
+    expect(after.unallocatedMinutes - before.unallocatedMinutes).toBe(2);
+    expect(after.loggedMinutes).toBe(before.loggedMinutes);
+  });
+});
+
+describe("summarizeCheckout", () => {
+  it("captures the three figures and the entry count", () => {
+    const allocation = validateAllocation(572, [
+      entry({ projectId: "p1", taskId: "t1", timeSpentMinutes: 300, workDescription: "a" }),
+      entry({ projectId: "p1", taskId: "t2", timeSpentMinutes: 180, workDescription: "b" }),
+    ]);
+    expect(summarizeCheckout(allocation, 2)).toEqual({
+      sessionMinutes: 572,
+      loggedMinutes: 480,
+      unallocatedMinutes: 92,
+      entryCount: 2,
+    });
   });
 });
 

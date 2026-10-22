@@ -1,0 +1,38 @@
+{
+ "measuredAt": "2026-10-13T12:33:41.322Z",
+ "definition": "R = (identity skin top − chin 0.805) / (eye line − chin 0.805), identity frame (cranium.mjs = the mounted gate's skull height ÷ face length)",
+ "heads": {
+  "angelo": {
+   "file": "public/avatars/human-base-v1/production/angelo-v1.glb",
+   "skinTop": 1.5986,
+   "eyeY": 1.2041,
+   "R": 1.9883
+  },
+  "bon": {
+   "file": "public/avatars/human-base-v1/production/bon-v1.glb",
+   "skinTop": 1.6036,
+   "eyeY": 1.1837,
+   "R": 2.1086
+  },
+  "clang": {
+   "file": "public/avatars/human-base-v1/production/clang-v1.glb",
+   "skinTop": 1.5547,
+   "eyeY": 1.2118,
+   "R": 1.8429
+  },
+  "france": {
+   "file": "public/avatars/human-base-v1/production/france-v1.glb",
+   "skinTop": 1.6336,
+   "eyeY": 1.2094,
+   "R": 2.0492
+  },
+  "micah": {
+   "file": "public/avatars/human-base-v1/production/micah-v1.glb",
+   "skinTop": 1.6461,
+   "eyeY": 1.2064,
+   "R": 2.0953
+  }
+ },
+ "min": 1.8429,
+ "max": 2.1086
+}

@@ -233,8 +233,13 @@ export const SCREEN_POINT: Vec2 = toWorld(ROOM.w / 2, SCREEN.inset + 46);
 /** how far clear of the screen surface a body must stay, on top of its own radius */
 export const SCREEN_CLEARANCE = 4;
 
-/** May a body of `radius` stand at world point `p`? The CAVE's whole collision model. */
-export function caveStandTest(p: Vec2, radius: number): boolean {
+/** May a body of `radius` stand at world point `p`? The CAVE's whole collision model.
+ *
+ *  PARKOUR V3 — it takes the same height context and excuse set as every other space's stand test (world/heightSolids)
+ *  and has nothing for either to change: the CAVE's only obstacles are its screen and its walls, which run floor to
+ *  ceiling and so stop a body at every height, and it has no furniture or tops (its floor cushions are drawn, not
+ *  solid). A height-aware piece added here later is declared with a band, exactly as the Lab's are. */
+export function caveStandTest(p: Vec2, radius: number, _body?: { feet: number; airborne: boolean }, _ignore?: ReadonlySet<string>): boolean {
   const x = p.x - ORIGIN.x, z = p.z - ORIGIN.z;
   const m = radius + SCREEN_CLEARANCE;
   const { inset, cornerR } = SCREEN;

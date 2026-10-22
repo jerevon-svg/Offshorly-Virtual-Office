@@ -310,14 +310,15 @@ export const MEMBER_CHAIRS = MEMBER_COLS.flatMap((col, ci) =>
     approach: { x: AISLES[col.aisle], z } as Vec2,
   })));
 
-export const MEMBER_SEATS: SeatCapability[] = MEMBER_CHAIRS.map((c) =>
-  deskChairSeat(c, { ...c.approach }, "x", c.dir, MEMBER_PULL, AI_TASK_CHAIR,
-    c.dir === -1 ? FACING_YAW.east : FACING_YAW.west));
+export const MEMBER_SEATS: SeatCapability[] = MEMBER_CHAIRS.map((c) => ({
+  ...deskChairSeat(c, { ...c.approach }, "x", c.dir, MEMBER_PULL, AI_TASK_CHAIR, c.dir === -1 ? FACING_YAW.east : FACING_YAW.west),
+  workstation: true, // a work desk: a HumanBase body pulls up to it and types (interact/seatContact)
+}));
 
 /** The LEAD chair. V1 authored 's' cells either side of its pair of 'o' cells (row 4, cols 9 and 12); the
  *  WEST one is taken, pulled 4 north of the cell centre so a body at NAV_RADIUS clears the lead desk. */
 export const LEAD_SEAT: SeatCapability =
-  deskChairSeat(LEAD_CHAIR, { x: 152, z: 68 }, "z", -1, LEAD_PULL, AI_LEAD_CHAIR, FACING_YAW.south);
+  { ...deskChairSeat(LEAD_CHAIR, { x: 152, z: 68 }, "z", -1, LEAD_PULL, AI_LEAD_CHAIR, FACING_YAW.south), workstation: true };
 
 /** The two VISITOR chairs, approached from V1's own 's' cells at row 7 (cols 8 and 13), which sit clear of
  *  both the lead desk's ends and the chairs themselves. */

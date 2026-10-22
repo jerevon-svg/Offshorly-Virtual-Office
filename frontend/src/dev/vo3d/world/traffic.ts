@@ -81,6 +81,8 @@ export type LoopPath = {
   x: Float64Array; z: Float64Array; heading: Float64Array; speed: Float64Array;
   /** time at each sample, seconds from the loop's start; `period` closes it */
   t: Float64Array; period: number; length: number;
+  /** S4 — the distance along the loop at each sample (s[n] = length): positions by ARC, for queueing */
+  s: Float64Array;
   /** each vehicle's time offset within the period */
   offsets: number[];
 };
@@ -130,10 +132,12 @@ export function buildLoopPath(loop: TrafficLoop): LoopPath {
   const t = new Float64Array(n + 1);
   for (let i = 0; i < n; i++) t[i + 1] = t[i] + ds[i] / (0.5 * (speed[i] + speed[(i + 1) % n]));
   const period = t[n];
+  const s = new Float64Array(n + 1);
+  for (let i = 0; i < n; i++) s[i + 1] = s[i] + ds[i];
   const total = loop.vehicles.reduce((a, v) => a + v.gap, 0);
   let acc = 0;
   const offsets = loop.vehicles.map((v) => { const o = (acc / total) * period; acc += v.gap; return o; });
-  return { loop, x, z, heading, speed, t, period, length, offsets };
+  return { loop, x, z, heading, speed, t, period, length, offsets, s };
 }
 
 export const wrapAngle = (a: number): number => Math.atan2(Math.sin(a), Math.cos(a));

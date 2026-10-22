@@ -1,6 +1,8 @@
 // Shared Zoho time-logging types. Kept framework-agnostic (no React) so
 // both Mock/Mcp service implementations and the checkout hook can share them.
 
+import type { CheckoutSummary } from "../../data/workedTime";
+
 export interface ZohoProject {
   id: string;
   name: string;
@@ -62,6 +64,16 @@ export interface SubmitTimeLogsResult {
   error?: string;
   /** Populated by AtlasZohoService on a partial failure. */
   failures?: TimeLogFailure[];
+  /** Set by useCheckoutFlow on a confirmed submission, never by a service and never sent to Atlas: the
+   *  checked-in / logged / not-logged figures the employee saw, kept so the success card stays correct
+   *  after a reload. Absent on results saved before it existed. */
+  checkoutSummary?: CheckoutSummary;
+  /** V3a, local only — Atlas answered 409 (it already holds a submission for this date). NOT a
+   *  success: nothing in this request is known to have been saved. */
+  conflict?: boolean;
+  /** V3a, local only — the employee checked out anyway after an unconfirmed submission. Never
+   *  stored in the result key; built by checkoutStorage.loadCompletion from the recovery copy. */
+  hoursNotConfirmed?: boolean;
   /** Set by AtlasZohoService on any failure; absent on success. */
   kind?: FailureKind;
 }

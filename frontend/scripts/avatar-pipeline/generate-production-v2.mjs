@@ -119,7 +119,7 @@ Prioritize preserving the facial/build/clothing likeness of the input image over
 const BACK_NO_FACE_CLAUSE =
   "true back view (not a profile, not a 3/4 view) — the character's back is fully toward the camera, showing the back/crown of the head, with NO face, eyes, nose, mouth, or ears visible anywhere in the image. The head covering must exactly match the input reference image: if the reference shows a bald head, this back view must also show a bald head/scalp — do NOT add hair that isn't in the reference. If the reference shows hair, show that exact hairstyle, hair color, and hair volume as it would appear from directly behind. Because no facial features are visible in this pose, identity must instead be conveyed through the correct head covering (bald scalp or matching hairstyle), build, and clothing/shoe details matching the input image.";
 
-function poseSuffix(text) {
+export function poseSuffix(text) {
   return `Now, ${text} Keep everything else (identity, clothing, art style, lighting, camera, scale) exactly the same as the input image.`;
 }
 
@@ -232,7 +232,7 @@ const PEOPLE = [
   },
 ];
 
-async function callImagesEdit(apiKey, form, label) {
+export async function callImagesEdit(apiKey, form, label) {
   let res;
   try {
     res = await fetch("https://api.openai.com/v1/images/edits", {

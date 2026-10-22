@@ -1,0 +1,11 @@
+{
+  "note": "Stage 0 inputs. Ids only name files. Ali has no file in ~/Downloads/Employee Sprite/; his house-style illustration from Bon's Bonfolio/Illustrations is used instead.",
+  "sources": {
+    "nicole": "/Users/lekoffshorly/Downloads/Employee Sprite/Nicole_Sprite.png",
+    "carl": "/Users/lekoffshorly/Downloads/Employee Sprite/Carl_Sprite.png",
+    "ali": "/Users/lekoffshorly/Downloads/Bonfolio/Illustrations/ali.png",
+    "chris": "/Users/lekoffshorly/Downloads/Employee Sprite/Chris_Sprite.png",
+    "arisha": "/Users/lekoffshorly/Downloads/Employee Sprite/Arisha_Sprite.png",
+    "rhendel": "/Users/lekoffshorly/Downloads/Employee Sprite/Rhendel_Sprite.png"
+  }
+}

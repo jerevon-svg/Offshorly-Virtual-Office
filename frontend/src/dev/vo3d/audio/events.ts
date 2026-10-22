@@ -39,15 +39,15 @@ export class EdgeTracker {
   }
 }
 
-/** how far a body travels between footfalls, in world units. Derived from the walk clip: the walk cycle
- *  is 1.067 s at its authored 30 u/s, which is two steps every 32 units — so 16 units per footfall, and
- *  the cadence then follows the ACTUAL speed for free (70 u/s is 4.4 steps a second, 100 u/s is 6.3). */
-export const STRIDE = 16;
-/** A SPRINT'S STRIDE IS LONGER, BUT NOT PROPORTIONALLY. That distinction is the whole point: if stride
- *  grew with speed the cadence would be identical at 70 and at 100, and a sprint would sound exactly like
- *  a walk. 18 against 16 means a 43% faster body takes 27% more steps a second — which is what running
- *  is, and why it is audibly running. */
-export const SPRINT_STRIDE = 18;
+/** how far a body travels between footfalls, in world units. Derived from the walk as drawn: the HumanBase walk cycle is
+ *  1.067 s at its measured 21.2 u/s (avatar/gait), two steps every ~22.6 units — so ~11 units per footfall, and the
+ *  cadence then follows the ACTUAL speed for free (the 42 u/s walk is 3.8 steps a second, in step with the feet on
+ *  screen). Was 16 for the legacy GLB walk (30 u/s authored). */
+export const STRIDE = 11;
+/** A SPRINT'S STRIDE IS LONGER, BUT NOT PROPORTIONALLY — or a sprint would sound exactly like a walk. The 200 u/s
+ *  sprint (2026-10-21, its stride opened up by avatar/gaitPose) at 30 units a footfall is 6.7 steps a second:
+ *  audibly running (1.3x the faster 54.6 walk's ~5/s) without becoming a machine gun. */
+export const SPRINT_STRIDE = 30;
 
 /** FOOTFALL CADENCE, from distance actually travelled. Not a timer: a player scraping along a wall covers
  *  no ground and takes no steps, which is the same rule the walk clip's playback rate already follows. */

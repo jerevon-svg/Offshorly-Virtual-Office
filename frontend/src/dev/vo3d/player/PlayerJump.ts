@@ -51,9 +51,15 @@ export const JUMP_DURATION_MS = (2 * TAKEOFF_SPEED / GRAVITY) * 1000;
  *  jumper and the people watching them hold the SAME pose. */
 export const AIRBORNE_POSE_PHASE = 0.5;
 
-/** A jump's own arc: takeoff speed and gravity (u/s, u/s²). The walk's is the default; the scooter has its own. */
-export type JumpTuning = { takeoff: number; gravity: number };
-export const WALK_JUMP: JumpTuning = { takeoff: TAKEOFF_SPEED, gravity: GRAVITY };
+/** A jump's own arc: takeoff speed and gravity (u/s, u/s²). The walk's is the default; the scooter has its own.
+ *  `airJumps` (PARKOUR V1): how many more jumps one arc allows before the feet touch down again — 0 = none. */
+export type JumpTuning = { takeoff: number; gravity: number; airJumps?: number; airTakeoff?: number };
+
+/** PARKOUR V1 — THE DOUBLE JUMP's upward speed. Given at the top of the first arc (11.7) it adds 90² / (2 x 260)
+ *  ≈ 15.6 for an apex near 27 above the takeoff floor: enough to land on a sofa cushion (15.6), a café table or
+ *  the conference table (24) and a campus bench (21), with the 36-unit body's head still under every storey. */
+export const DOUBLE_JUMP_SPEED = 90;
+export const WALK_JUMP: JumpTuning = { takeoff: TAKEOFF_SPEED, gravity: GRAVITY, airJumps: 1, airTakeoff: DOUBLE_JUMP_SPEED };
 
 export class PlayerJump {
   /** the feet's height, ABSOLUTE (the world's y), while airborne */
@@ -63,6 +69,10 @@ export class PlayerJump {
   /** the height the jump left from — `height` is measured above it */
   private base = 0;
   private readonly tune: JumpTuning;
+  /** air jumps left in this arc; refilled only by a landing */
+  private airLeft = 0;
+  /** the highest the feet reached since leaving the floor — a landing's fall height is peak − floor */
+  private top = 0;
 
   constructor(tune: JumpTuning = WALK_JUMP) {
     this.tune = tune;
@@ -76,14 +86,32 @@ export class PlayerJump {
   get verticalSpeed(): number { return this.vy; }
   /** Is the body off the floor? The grounded test, and the no-double-jump test, are the same question. */
   get airborne(): boolean { return this.inAir; }
+  /** The highest the feet have been since this arc left the floor (absolute). */
+  get peak(): number { return this.inAir ? this.top : this.base; }
+  /** How far the last landing fell, from the arc's peak to the floor it landed on — 0 before any landing. */
+  lastFall = 0;
+  /** PARKOUR V1 — can a mid-air jump be taken right now? */
+  get canAirJump(): boolean { return this.inAir && this.airLeft > 0; }
 
   /** Ask for a jump from a floor at `from` (absolute; 0 = the datum). Refused — and nothing changes —
    *  unless the body is on the floor, which is what makes a held Space or a second press a no-op. */
   start(from = 0): boolean {
     if (this.inAir) return false;
     this.inAir = true;
-    this.base = this.y = from;
+    this.base = this.y = this.top = from;
     this.vy = this.tune.takeoff;
+    this.airLeft = this.tune.airJumps ?? 0;
+    return true;
+  }
+
+  /** PARKOUR V1 — THE DOUBLE JUMP: a second takeoff in mid-air, once per arc. Refused — nothing changes —
+   *  on the floor (that is `start`), with none left, or when `ceiling` (the highest the FEET may rise here,
+   *  absolute) leaves no room for it. The new upward speed replaces whatever the arc was doing. */
+  airJump(ceiling = Infinity): boolean {
+    if (!this.inAir || this.airLeft <= 0) return false;
+    if (ceiling - this.y < 4) return false;
+    this.airLeft -= 1;
+    this.vy = this.tune.airTakeoff ?? this.tune.takeoff;
     return true;
   }
 
@@ -92,22 +120,29 @@ export class PlayerJump {
   fall(from: number): void {
     if (this.inAir) return;
     this.inAir = true;
-    this.base = this.y = from;
+    this.base = this.y = this.top = from;
     this.vy = 0;
+    // walking off an edge is not a jump: it grants no mid-air jump
+    this.airLeft = 0;
   }
 
   /** Step by dt seconds over a floor at `floor` (absolute — the highest ground under the body now; the
    *  takeoff floor by default, which is the flat-floor jump). Returns TRUE on the one frame the body lands,
    *  so the caller can put the right clip back. It lands only while descending, so a jump taken beside a
    *  step rises past it rather than snagging on it, and it lands ON the floor — never below it. */
-  update(dt: number, floor = this.base): boolean {
+  update(dt: number, floor = this.base, ceiling = Infinity): boolean {
     if (!this.inAir) return false;
     this.vy -= this.tune.gravity * dt;
     this.y += this.vy * dt;
+    // HEADROOM (PARKOUR V1): the feet may not rise past `ceiling` — the head meets it and the arc turns there
+    if (this.y > ceiling) { this.y = Math.max(ceiling, floor); if (this.vy > 0) this.vy = 0; }
+    if (this.y > this.top) this.top = this.y;
     if (this.vy > 0 || this.y > floor) return false;
+    this.lastFall = Math.max(0, this.top - floor);
     this.base = this.y = floor;
     this.vy = 0;
     this.inAir = false;
+    this.airLeft = 0;
     return true;
   }
 
@@ -116,5 +151,6 @@ export class PlayerJump {
     this.y = this.base;
     this.vy = 0;
     this.inAir = false;
+    this.airLeft = 0;
   }
 }

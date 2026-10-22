@@ -15,6 +15,8 @@ vi.mock("./../../services/presence/movementSync", async () => {
   const actual = await vi.importActual<typeof import("../../services/presence/movementSync")>("../../services/presence/movementSync");
   return { ...actual, emitWalkStarted: (...a: unknown[]) => emitWalkStarted(...a), emitWalkArrived: (...a: unknown[]) => emitWalkArrived(...a) };
 });
+// these exercise the LEGACY prototype pipeline with "bon" as a stock character; HumanBase peers: Coworkers.human.test
+vi.mock("./avatar/humanBody", async (orig) => ({ ...(await orig<typeof import("./avatar/humanBody")>()), humanBodyFor: () => null }));
 vi.mock("./avatar/CastPrototypes", () => ({
   prototypeFor: (id: string) =>
     Promise.resolve({ id, gltf: {} as never, scene: new THREE.Group(), clips: ["idle-9", "sit-on-chair-arms", "walking"].map((n) => new THREE.AnimationClip(n, 1, [])), triangles: 100, headY: 36 }),

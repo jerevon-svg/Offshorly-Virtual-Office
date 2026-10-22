@@ -29,7 +29,8 @@ export const CLIP_GROUND_SPEED: Record<string, number> = { [CLIP_WALK]: 30, [CLI
 /** Ceiling on locomotion playback rate, per clip — a spike guard, not a look choice. See the header for
  *  why `walking` gets the higher one: PLAYER_SPRINT_SPEED (100) / CLIP_GROUND_SPEED.walking (30) = 3.34,
  *  which is what the walk cycle must reach when it is the only locomotion a package ships. */
-const MAX_CLIP_RATE: Record<string, number> = { [CLIP_WALK]: 3.4, [CLIP_RUN]: 2.5 };
+// (2026-10-21, the 200 sprint: a walk-only rig covers it with the walk at 200 / 1.5 stride / 30 = 4.4x)
+const MAX_CLIP_RATE: Record<string, number> = { [CLIP_WALK]: 4.5, [CLIP_RUN]: 3.4 };
 /** For any clip not named above — nothing drives one today; stated so the lookup can never be undefined. */
 const DEFAULT_MAX_CLIP_RATE = 2.5;
 /** Below this the mixer is effectively paused; a long stall must not freeze a body mid-stride. */
@@ -45,6 +46,59 @@ const MIN_CLIP_RATE = 0.15;
  */
 export function locomotionClip(running: boolean, hasRun: boolean): string {
   return running && hasRun ? CLIP_RUN : CLIP_WALK;
+}
+
+// HUMANBASE BODIES SPEAK A DIFFERENT CLIP LIBRARY. The shared HumanBase_V1 clips cover (stance-foot speed against the
+// root at rate 1, AS DRAWN — with HumanAvatar's gait-posture layer, which lengthens the walk's stride from the clip's own
+// ~15.3 u/s; pinned by avatar/gait.humanbase.test.ts): `walking` ~21.2 u/s (1.067 s cycle, legs ~8 u long) and `running`
+// ~36 u/s (0.667 s). The legacy table's 30 made a HumanBase walk skate. Each clip is paced from its own measured speed;
+// the office's brisk walk (PLAYER_WALK_SPEED 42) plays the walk at ~2x, foot-locked — and the run is the INTENTIONAL gait (Shift, a sprinting replay). A body travelling well past any walk with no
+// such intent (a fast replay) still switches to the run rather than skate, with hysteresis. Legacy GLB bodies keep the
+// table above untouched.
+export const HUMANBASE_CLIP_GROUND_SPEED: Record<string, number> = { [CLIP_WALK]: 21.2, [CLIP_RUN]: 36 };
+// 2026-10-21 (later): the walk is 54.6 (2.58x — under the walk's ceiling) and the sprint 200. The run's cadence goes
+// up to 3.4x and avatar/gaitPose opens its stride up to 1.5x at a full sprint, so ~184 of the 200 is real stride:
+// a cartoon sprint's quick feet, not a skate. Run from 80 without Shift (a brisk walk, even a 30% wobble of it, never
+// flips into a run).
+const HB_MAX_CLIP_RATE: Record<string, number> = { [CLIP_WALK]: 2.6, [CLIP_RUN]: 3.4 };
+/** HumanBase walk → run at this ground speed (u/s) without a run intent, and back below HB_WALK_BELOW */
+export const HB_RUN_FROM = 80;
+const HB_WALK_BELOW = 65;
+
+export type GaitRuntime = "humanbase" | "legacy-glb" | "none";
+/**
+ * THE CLIP AND RATE FOR ONE BODY THIS FRAME, by the runtime drawing it. `running` is the movement's own ask
+ * (Shift, a replay's mean speed); `current` is the clip already playing (the HumanBase hysteresis). A legacy body
+ * is exactly locomotionClip + locomotionRate.
+ */
+export function locomotion(runtime: GaitRuntime, groundSpeed: number, running: boolean, hasRun: boolean, current: string | null, stride = 1): { clip: string; rate: number } {
+  if (runtime !== "humanbase") { const clip = locomotionClip(running, hasRun); return { clip, rate: locomotionRate(clip, groundSpeed / stride) }; }
+  const fast = groundSpeed >= (current === CLIP_RUN ? HB_WALK_BELOW : HB_RUN_FROM);
+  const clip = (running || fast) && hasRun ? CLIP_RUN : CLIP_WALK;
+  // a stride opened up by the sprint (avatar/gaitPose) covers that much more ground per cycle: the cadence gives it back
+  return { clip, rate: gaitRate(runtime, clip, groundSpeed / stride, hasRun) };
+}
+/** INTERACTION V2 — OFFICE VIEW'S FAST-FORWARD TRAVEL is the WALK, played fast — V1's quick click-to-walk, a video
+ *  on fast-forward — never the run or the sprint (no lean, no momentum: those stay Player View's). Up to this
+ *  cadence, a HumanBase walk's feet keep up with the ground; past it the travel glides a little rather than flailing. */
+export const FAST_FORWARD_MAX_RATE = 5;
+/** the walk's playback rate for a body travelling at `groundSpeed`: exactly gaitRate up to the ordinary walk,
+ *  and above it the fast-forward cadence (HumanBase only — a legacy body keeps its own table) */
+export function walkRate(runtime: GaitRuntime, groundSpeed: number, hasRun = true): number {
+  const r = gaitRate(runtime, CLIP_WALK, groundSpeed, hasRun);
+  if (runtime !== "humanbase") return r;
+  return Math.max(r, Math.min(FAST_FORWARD_MAX_RATE, groundSpeed / HUMANBASE_CLIP_GROUND_SPEED[CLIP_WALK]));
+}
+/** how much further a stride reaches at this much of a sprint (avatar/gaitPose GAIT_POSE.STRIDE) */
+export const sprintStride = (sprint: number): number => 1 + 0.5 * Math.max(0, Math.min(1, sprint));
+/** the playback rate alone, for a clip already chosen (a peer picks its clip once per movement) */
+export function gaitRate(runtime: GaitRuntime, clip: string, groundSpeed: number, hasRun = true): number {
+  if (runtime !== "humanbase") return locomotionRate(clip, groundSpeed);
+  const authored = HUMANBASE_CLIP_GROUND_SPEED[clip];
+  if (!authored) return 1;
+  // a package with no run clip must still cover a sprint with the walk (the legacy ceiling's reason)
+  const ceiling = clip === CLIP_WALK && !hasRun ? MAX_CLIP_RATE[CLIP_WALK] : HB_MAX_CLIP_RATE[clip];
+  return Math.min(ceiling, Math.max(MIN_CLIP_RATE, groundSpeed / authored));
 }
 
 /**

@@ -87,6 +87,9 @@ export interface AutoConditions {
   /** participating in a Meeting Floor room's live meeting — outranks an ordinary call */
   inMeeting?: boolean;
   offline: boolean;
+  /** Away Mode V1 — Toucan is handling this person's messages (mirrored from the server's
+   *  delegation row by services/toucan/awayMode.ts). Reads as AWAY, at Away's own precedence. */
+  delegated?: boolean;
 }
 
 // Precedence (highest to lowest):
@@ -106,7 +109,7 @@ export function resolveCurrentStatus(
   if (autoConditions.inMeeting) return "IN_MEETING";
   if (autoConditions.inCall) return "IN_CALL";
   if (autoConditions.inConversation) return "IN_CONVERSATION";
-  if (autoConditions.away) return "AWAY";
+  if (autoConditions.away || autoConditions.delegated) return "AWAY";
   return manualStatus;
 }
 
@@ -135,10 +138,17 @@ export function getStatusTimeLimitMs(status: OfficeStatus): number | undefined {
 // resolveCurrentStatus above) says DND while every other client says whatever
 // Atlas says — including OFFLINE for somebody plainly online. Self is never
 // resolved through this; self keeps resolveCurrentStatus.
-export function resolvePeerStatus(atlas: PresenceStatusValue, isDnd: boolean, inMeeting = false): OfficeStatus {
+//
+// `live` (2026-10-21): the person's OWN effective status, relayed while their socket is connected to this app
+// (dndClient.ts usePeerStatuses ← backend peer_status_registry.py). It outranks the presence row for the same
+// reason DND does — it is what that person's client says right now (Available, Busy, Break, Lunch, Away, In
+// Conversation/Call, Offline after checkout), while the row is another system's opinion (in mock mode a fixed
+// seed). Absent (not connected here) → the row decides, exactly as before.
+export function resolvePeerStatus(atlas: PresenceStatusValue, isDnd: boolean, inMeeting = false, live: OfficeStatus | null = null): OfficeStatus {
   if (isDnd) return "DND";
   // THE SERVER'S meeting_presence outranks Atlas's row: a person the room's live meeting lists is here and
   // in that meeting, whatever a feed that never hears about meetings says (Available, or Offline).
   if (inMeeting) return "IN_MEETING";
+  if (live) return live;
   return mapAtlasToOfficeStatus(atlas);
 }

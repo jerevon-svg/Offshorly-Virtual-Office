@@ -99,6 +99,13 @@ vi.mock("../../../services/presence/movementSync", async () => {
         movementSubscribers.jumps -= 1;
       };
     },
+    // PARKOUR V1 — the double jump / roll relay, counted with the jumps for the same no-leak reason
+    subscribePeerParkour: () => {
+      movementSubscribers.jumps += 1;
+      return () => {
+        movementSubscribers.jumps -= 1;
+      };
+    },
     // Phase 6A: the host reads V1's last-snapshot clock offset to say how far into a walk a peer is.
     // Zero here, so a test's `startedAt` is measured against the test's own clock.
     getServerClockOffsetMs: () => 0,
@@ -173,13 +180,17 @@ describe("Vo3dHost coworkers (Phase 4A)", () => {
   }, TEST_TIMEOUT);
 
   it("reports an employee V1 lists but V2 cannot draw, rather than shrinking the office silently", async () => {
-    people = [ALEX, LUI];
-    render(<Vo3dHost />);
-    await waitFor(() => expect(worlds).toHaveLength(1), { timeout: WORLD_IMPORT_TIMEOUT });
-    const readout = await screen.findByTestId("vo3d-coworkers");
-    expect(readout.getAttribute("data-count")).toBe("1");
-    expect(readout.getAttribute("data-missing-avatar")).toBe("1");
-    expect(lastPush().missingAvatar).toEqual(["Lui"]);
+    // Lui's only body is HumanBase: under the `?humanbase=0` rollback V2 cannot draw him
+    window.history.replaceState({}, "", "/?humanbase=0");
+    try {
+      people = [ALEX, LUI];
+      render(<Vo3dHost />);
+      await waitFor(() => expect(worlds).toHaveLength(1), { timeout: WORLD_IMPORT_TIMEOUT });
+      const readout = await screen.findByTestId("vo3d-coworkers");
+      expect(readout.getAttribute("data-count")).toBe("1");
+      expect(readout.getAttribute("data-missing-avatar")).toBe("1");
+      expect(lastPush().missingAvatar).toEqual(["Lui"]);
+    } finally { window.history.replaceState({}, "", "/"); }
   }, TEST_TIMEOUT);
 
   it("STILL OPENS THE WORLD when the roster fails — an outage is not a broken preview", async () => {

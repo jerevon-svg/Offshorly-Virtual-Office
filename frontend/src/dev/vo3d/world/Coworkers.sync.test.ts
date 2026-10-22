@@ -12,6 +12,8 @@ let autoResolve = true;
 /** every prototypeFor call, so a test can prove a position update did not re-request a character. */
 const loadCalls: string[] = [];
 
+// these exercise the LEGACY prototype pipeline with "bon" as a stock character; HumanBase peers: Coworkers.human.test
+vi.mock("../avatar/humanBody", async (orig) => ({ ...(await orig<typeof import("../avatar/humanBody")>()), humanBodyFor: () => null }));
 vi.mock("../avatar/CastPrototypes", () => ({
   prototypeFor: (id: string) => {
     loadCalls.push(id);
@@ -393,8 +395,8 @@ describe("Coworkers — the read-only verification surface", () => {
     const cw = makeCoworkers();
     await cw.sync([movedTo(A, 42), B]);
     expect(cw.positions()).toEqual([
-      { name: "a", x: 42, z: 0, yaw: 0, source: "live", movementId: null, clip: "", seat: null, airborne: false },
-      { name: "b", x: 200, z: 0, yaw: 0, source: "desk", movementId: null, clip: "", seat: null, airborne: false },
+      { name: "a", x: 42, z: 0, yaw: 0, source: "live", movementId: null, clip: "", avatarId: "bon", runtime: "legacy-glb", seat: null, airborne: false },
+      { name: "b", x: 200, z: 0, yaw: 0, source: "desk", movementId: null, clip: "", avatarId: "alex", runtime: "legacy-glb", seat: null, airborne: false },
     ]);
     expect(JSON.stringify(cw.positions())).not.toContain("@");
   });

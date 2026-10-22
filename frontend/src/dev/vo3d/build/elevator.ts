@@ -61,6 +61,34 @@ function indicatorMat(text: string): THREE.MeshStandardMaterial {
   }, 1.2);
 }
 
+/** THE READ-OUT ROLLING FROM ONE FLOOR TO THE NEXT: the same face, two cells tall — `top` over `bottom`,
+ *  each drawn exactly as indicatorMat draws one — shown half at a time and scrolled. One cached texture per
+ *  pair (a ride uses at most three), never redrawn; only its UV offset moves. */
+function rollMat(top: string, bottom: string): THREE.MeshStandardMaterial {
+  const m = uiScreenMat(`lift-roll:${top}/${bottom}`, 160, 144, (ctx, w, h) => {
+    ctx.fillStyle = "#07090f";
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = "#8fe8ff";
+    ctx.font = "700 50px ui-sans-serif, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(top, w / 2, h / 4 + 2);
+    ctx.fillText(bottom, w / 2, (3 * h) / 4 + 2);
+  }, 1.2);
+  if (m.map) m.map.repeat.set(1, 0.5);
+  return m;
+}
+
+/** Show `p` (0…1) of the step from `from` to `to`. Going UP the next number rises in from below; going
+ *  DOWN it drops in from above — the way a real car's read-out turns over. */
+function rollFaces(faces: THREE.Mesh[], from: string, to: string, dir: "up" | "down", p: number): void {
+  const e = smooth(Math.max(0, Math.min(1, p)));
+  const m = dir === "up" ? rollMat(from, to) : rollMat(to, from);
+  // the texture's v runs bottom-up: offset 0.5 shows the TOP cell, 0 the BOTTOM one
+  if (m.map) m.map.offset.y = dir === "up" ? 0.5 * (1 - e) : 0.5 * e;
+  for (const f of faces) f.material = m;
+}
+
 /** Floor, ceiling, back and side panels, waist reveal, handrails and downlights for one stretch of car.
  *  `back` draws the rear panel (the vestibule and the cabin's volume have one; the bay does not). */
 function liftInterior(g: THREE.Group, inner: R2, height: number, lights: THREE.Mesh[], back: boolean): void {
@@ -167,6 +195,8 @@ export interface LiftBuild {
   group: THREE.Group;
   setOpen(t: number): void;
   setIndicator(text: string): void;
+  /** the read-out part-way (`p` 0…1) through stepping from `from` to `to`; finish with setIndicator(to) */
+  rollIndicator?(from: string, to: string, dir: "up" | "down", p: number): void;
   setLight(level: number): void;
   dispose(): void;
 }
@@ -204,6 +234,7 @@ export function buildElevatorCore(spec: ElevatorSpec, indicator: string): Elevat
     group: g,
     setOpen: doors.setOpen,
     setIndicator: (t) => { for (const f of faces) f.material = indicatorMat(t); },
+    rollIndicator: (a, b, dir, p) => rollFaces(faces, a, b, dir, p),
     setLight: (l) => applyLight(lights, l),
     callPickName,
     dispose: () => g.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.geometry.dispose(); }),
@@ -246,6 +277,7 @@ export function buildCabin(indicator: string): LiftBuild {
     group: g,
     setOpen: doors.setOpen,
     setIndicator: (t) => { for (const f of faces) f.material = indicatorMat(t); },
+    rollIndicator: (a, b, dir, p) => rollFaces(faces, a, b, dir, p),
     setLight: (l) => applyLight(lights, l),
     dispose: () => g.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.geometry.dispose(); }),
   };

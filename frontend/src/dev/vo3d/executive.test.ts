@@ -20,7 +20,7 @@ import { CENTRAL_HUB, centralHubEntities, OPEN_BANDS as HUB_BANDS } from "./room
 import {
   ARMCHAIR_N, ARMCHAIR_S, ARMCHAIR_SEAT_IDS, AXIS, CABINET_L, CABINET_L_APPROACH, CABINET_R,
   CABINET_R_APPROACH, COFFEE_TABLE, CREDENZA_APPROACH, CREDENZA_SW, DESK_L, DESK_R, DESK_SE, DOOR,
-  DOOR_EAST_ID, DOOR_LEAF_CLOSED, DOOR_LEAF_W, DOOR_STANDS, DOOR_WEST_ID, EAST_X, ENTRY_DOOR,
+  DOOR_EAST_ID, DOOR_LEAF_CLOSED, HR_SERVICES_APPROACH, HR_SERVICES_INTERACTION_ID, WORKSTATION_CHAIR_ID, DOOR_LEAF_W, DOOR_STANDS, DOOR_WEST_ID, EAST_X, ENTRY_DOOR,
   EXECUTIVE_LOUNGE_IDS, EXECUTIVE_ROOM, EXECUTIVE_ROOM_ID, EXECUTIVE_SEAT_IDS, EXEC_CHAIRS,
   EXECUTIVE_WALLS, FLOOR_RECT, MEDIA_APPROACH, MEDIA_CONSOLE, NORTH_Z, RECT, SOFA_DEPTH, SOFA_E_SPEC, SOFA_LEN,
   RETURN_SE, SOFA_SEAT_IDS, SOFA_W_SPEC, SOUTH_Z, THEME, TILE_RECT, VISITORS_L, VISITORS_R,
@@ -40,6 +40,8 @@ import { v1Static, worldToCell } from "./adapters/v1Grid";
 import { planWalk } from "./nav/planner";
 import { isSolid } from "./world/WorldState";
 import { FACING_YAW, pointInRect, type Rect, type Vec2 } from "./core/coords";
+import { FIXTURE_ZONE, REACH, collectCandidates, pickTarget } from "./player/PlayerTargeting";
+import { describeInteractable } from "./app/interactables";
 
 /** the same wiring bootstrap.ts uses, minus THREE */
 function rig() {
@@ -189,6 +191,7 @@ describe("vo3d executive room — derived navigation", () => {
       ["cabinet east", CABINET_R_APPROACH.point],
       ["media wall", MEDIA_APPROACH.point],
       ["credenza", CREDENZA_APPROACH.point],
+      ["hr services", HR_SERVICES_APPROACH.point],
     ];
     for (const id of EXECUTIVE_SEAT_IDS) anchors.push([id, world.get(id).capabilities.seat!.approach]);
     for (const id of EXECUTIVE_LOUNGE_IDS)
@@ -253,12 +256,12 @@ describe("vo3d executive room — derived navigation", () => {
 });
 
 describe("vo3d executive room — interactions reuse V2's existing systems", () => {
-  it("three MOVABLE chairs, eight fixed visitors, two sofas, two armchairs and four walk-ups", () => {
+  it("three MOVABLE chairs, eight fixed visitors, two sofas, two armchairs and five walk-ups", () => {
     const { world } = rig();
     const es = [...world.entities.values()].filter((e) => e.roomId === EXECUTIVE_ROOM_ID);
     expect(es.filter((e) => e.capabilities.seat)).toHaveLength(3);
     expect(es.filter((e) => e.capabilities.lounge)).toHaveLength(12);
-    expect(es.filter((e) => e.capabilities.approach)).toHaveLength(4);
+    expect(es.filter((e) => e.capabilities.approach)).toHaveLength(5);
     expect(es.filter((e) => e.capabilities.door)).toHaveLength(1);
     // a piece never carries both verbs
     for (const e of es) expect(Boolean(e.capabilities.seat && e.capabilities.lounge)).toBe(false);
@@ -462,5 +465,41 @@ describe("vo3d executive room — the three movable chairs complete the seat seq
       expect(src.includes(`${name}?.update(dt / 1000);`), `${name} is never updated in the frame loop`).toBe(true);
     // and the same for the one non-nullable desk chair the Design Room owns
     expect(src.includes("seat.update(dt / 1000);")).toBe(true);
+  });
+});
+
+describe("vo3d executive room — HR Services is its own walk-up, never the HR desk's Sit", () => {
+  const south = { x: 0, z: 1 };
+
+  it("names itself as a person would, with its own stand point on the room side of the return", () => {
+    const { world } = rig();
+    const d = describeInteractable(world.get(HR_SERVICES_INTERACTION_ID));
+    expect(d).toEqual({ kind: "approach", title: "HR Services", verb: "Open HR Services", anchor: HR_SERVICES_APPROACH.point });
+    // north of the return (z 218) and inside the room, never behind the desk with the HR seat
+    expect(HR_SERVICES_APPROACH.point.z).toBeLessThan(RETURN_SE.z);
+    expect(pointInRect(HR_SERVICES_APPROACH.point, FLOOR_RECT)).toBe(true);
+  });
+
+  it("standing at the visitor point offers HR Services; standing at the chair's own stand point offers Sit", () => {
+    const { world } = rig();
+    const cands = collectCandidates(world).get(EXECUTIVE_ROOM_ID)!;
+    expect(pickTarget(cands, HR_SERVICES_APPROACH.point, south)?.id).toBe(HR_SERVICES_INTERACTION_ID);
+    // facing away from the desk it is still offered — a fixture is a place, not an aim
+    expect(pickTarget(cands, HR_SERVICES_APPROACH.point, { x: 0, z: -1 })?.id).toBe(HR_SERVICES_INTERACTION_ID);
+    const seatStand = world.get(WORKSTATION_CHAIR_ID).capabilities.seat!.approach;
+    expect(Math.hypot(seatStand.x - HR_SERVICES_APPROACH.point.x, seatStand.z - HR_SERVICES_APPROACH.point.z)).toBeGreaterThan(REACH);
+    expect(pickTarget(cands, seatStand, { x: 1, z: 0 })?.id).toBe(WORKSTATION_CHAIR_ID);
+  });
+
+  it("no visitor chair's stand point sits inside the HR Services stand zone", () => {
+    const { world } = rig();
+    const cands = collectCandidates(world).get(EXECUTIVE_ROOM_ID)!;
+    for (const x of VISITORS_R) {
+      const stand = { x, z: 188 };
+      expect(Math.hypot(stand.x - HR_SERVICES_APPROACH.point.x, stand.z - HR_SERVICES_APPROACH.point.z), `visitor at ${x}`).toBeGreaterThan(FIXTURE_ZONE);
+      // facing the executive desk to sit, the visitor chair in front wins — not the HR desk behind
+      const t = pickTarget(cands, stand, { x: 0, z: -1 });
+      expect(t?.id, `visitor at ${x}`).not.toBe(HR_SERVICES_INTERACTION_ID);
+    }
   });
 });

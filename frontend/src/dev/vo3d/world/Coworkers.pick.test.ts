@@ -10,6 +10,8 @@ import { Coworkers } from "./Coworkers";
 import { BON_STANDING_HEIGHT } from "../adapters/v1Avatar";
 import type { Vo3dCoworker } from "../app/coworkers";
 
+// these exercise the LEGACY prototype pipeline with "bon" as a stock character; HumanBase peers: Coworkers.human.test
+vi.mock("../avatar/humanBody", async (orig) => ({ ...(await orig<typeof import("../avatar/humanBody")>()), humanBodyFor: () => null }));
 vi.mock("../avatar/CastPrototypes", () => ({
   prototypeFor: (id: string) =>
     Promise.resolve({ id, gltf: {} as never, scene: new THREE.Group(), clips: [] as THREE.AnimationClip[], triangles: 100, headY: 36 }),

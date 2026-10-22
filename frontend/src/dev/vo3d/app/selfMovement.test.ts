@@ -693,3 +693,80 @@ describe("the lift — boardedLift / alightedLift", () => {
     expect(calls).toEqual([]);
   });
 });
+
+// THE PEDESTRIAN REGRESSION (found live 2026-10-21): a scooter rack inside V1's frame, a ride out onto the campus,
+// a step off (or an S6 crash, which ends in the same step off) — and nothing the walker did out there was ever
+// published, so the server kept them at their desk and refused every "I am in this car's lane" report.
+describe("stepping off a scooter out on the campus", () => {
+  const inFrame = (p: { x: number; z: number }) => p.x >= 0 && p.x <= 1440 && p.z >= 0 && p.z <= 1244;
+  const CAMPUS = "campus";
+
+  it("a ride that LEFT the frame is announced at the last point it held inside, standing where they stepped off; walking is published after", () => {
+    const { sink, calls } = recorder();
+    const feed = new SelfMovementFeed(sink, inFrame);
+    feed.frame(16, { x: 1156, z: 1207 }, 0, false);            // at the rack, inside the frame
+    feed.mountedScooter({ x: 1156, z: 1207 }, 0);
+    feed.frame(16, { x: 1156, z: 1240 }, 0, false);            // riding, still inside
+    feed.frame(16, { x: 1156, z: 1300 }, 0, false);            // out onto the campus…
+    feed.entering(CAMPUS);                                     // …which the world names a frame later
+    feed.frame(16, { x: 900, z: 1500 }, 0, false);
+    calls.length = 0;
+    feed.dismountedScooter({ x: 880, z: 1520 }, 0);
+    expect(calls).toEqual([{ call: "placed", at: { x: 1156, z: 1240 }, room: CAMPUS, localAt: { x: 880, z: 1520 } }]);
+    calls.length = 0;
+    drive(feed, { x: 880, z: 1520 }, 0, 1, 600, 80);           // walks into the road
+    feed.frame(16, { x: 880, z: 1570 }, 0, false);
+    for (let i = 0; i < 40; i++) feed.frame(16, { x: 880, z: 1570 }, 0, false);
+    expect(calls.some((c) => c.call === "inPlace" && c.room === CAMPUS && c.anchor.x === 1156)).toBe(true);
+  });
+
+  it("a ride that started out on the campus and stayed there keeps the anchor the walk out set", () => {
+    const { sink, calls } = recorder();
+    const feed = new SelfMovementFeed(sink, inFrame);
+    feed.frame(16, { x: 700, z: 1240 }, 0, false);
+    feed.entering(CAMPUS);
+    feed.frame(16, { x: 700, z: 1300 }, 0, false);             // walked out: announced at (700, 1240)
+    feed.mountedScooter({ x: 700, z: 1300 }, 0);
+    feed.frame(16, { x: 300, z: 1600 }, 0, false);
+    calls.length = 0;
+    feed.dismountedScooter({ x: 280, z: 1610 }, 0);
+    expect(calls).toEqual([{ call: "placed", at: { x: 700, z: 1240 }, room: CAMPUS, localAt: { x: 280, z: 1610 } }]);
+  });
+
+  it("a ride out, back through the frame and out again is anchored where it last was inside", () => {
+    const { sink, calls } = recorder();
+    const feed = new SelfMovementFeed(sink, inFrame);
+    feed.frame(16, { x: 700, z: 1240 }, 0, false);
+    feed.entering(CAMPUS);
+    feed.frame(16, { x: 700, z: 1300 }, 0, false);
+    feed.mountedScooter({ x: 700, z: 1300 }, 0);
+    feed.frame(16, { x: 1400, z: 1200 }, 0, false);            // back inside on the deck
+    feed.frame(16, { x: 1500, z: 1200 }, 0, false);            // out the east side
+    calls.length = 0;
+    feed.dismountedScooter({ x: 1520, z: 1200 }, 0);
+    expect(calls).toEqual([{ call: "placed", at: { x: 1400, z: 1200 }, room: CAMPUS, localAt: { x: 1520, z: 1200 } }]);
+  });
+
+  it("stepping off INSIDE the frame is an ordinary snap", () => {
+    const { sink, calls } = recorder();
+    const feed = new SelfMovementFeed(sink, inFrame);
+    feed.frame(16, { x: 1156, z: 1207 }, 0, false);
+    feed.mountedScooter({ x: 1156, z: 1207 }, 0);
+    feed.frame(16, { x: 1100, z: 1200 }, 0, false);
+    calls.length = 0;
+    feed.dismountedScooter({ x: 1100, z: 1200 }, 0);
+    expect(calls.map((c) => c.call)).toEqual(["started", "arrived"]);
+  });
+
+  it("relocated out here before the world named the place: announced the moment it is named", () => {
+    const { sink, calls } = recorder();
+    const feed = new SelfMovementFeed(sink, inFrame);
+    feed.frame(16, { x: 1196, z: 1207 }, 0, false);
+    feed.teleported({ x: 1200, z: 1566 }, 0);                  // straight into the road, place not named yet
+    expect(calls.some((c) => c.call === "placed")).toBe(false);
+    feed.entering(CAMPUS);
+    expect(calls.filter((c) => c.call === "placed")).toEqual([{ call: "placed", at: { x: 1196, z: 1207 }, room: CAMPUS, localAt: { x: 1200, z: 1566 } }]);
+    feed.entering(null); feed.entering(CAMPUS);                // and only once
+    expect(calls.filter((c) => c.call === "placed")).toHaveLength(1);
+  });
+});

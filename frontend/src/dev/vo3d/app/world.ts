@@ -10,7 +10,7 @@ import {
   subscribeEnvironmentPreferences,
 } from "../../../services/settings/environmentPreferences";
 import { DESIGN_ROOM, CHAIR_4_ID, DOOR_ID, HERO_PLANT_ID, SHELL as DESIGN_SHELL } from "../rooms/design-room";
-import { RECEPTION_ROOM, COUNTER_INTERACTION_ID, FACADE as FACADE_SPEC, ENTRY_DOOR_EAST_ID, ENTRY_DOOR_WEST_ID, ENTRY_SCANNER_ID, ENTRY_ZONE, GATE, GATE_SCANNER_IDS, GATE_ZONES, KIOSK_INTERACTION_ID, KIOSK_SCANNER_ID, KIOSK_ZONE, LOUNGE_SEAT_IDS, RECEPTION_ROOM_ID } from "../rooms/reception";
+import { RECEPTION_ROOM, COUNTER_INTERACTION_ID, FACADE as FACADE_SPEC, ENTRY_DOOR_EAST_ID, ENTRY_DOOR_WEST_ID, ENTRY_SCANNER_ID, ENTRY_ZONE, GATE, GATE_SCANNER_IDS, GATE_ZONES, KIOSK_INTERACTION_ID, KIOSK_SCANNER_ID, KIOSK_ZONE, LOUNGE_SEAT_IDS, RECEPTION_ROOM_ID, RECEPTION_VAULT_RAILS } from "../rooms/reception";
 import { GAMING_ROOM,
   BAG_SEAT_IDS, DARTS_INTERACTION_ID, DOOR_LEAF_ID as GAMING_DOOR_ID, FRIDGE_INTERACTION_ID, GAMING_CHAIR_IDS,
   POSTER_INTERACTION_ID, SOFA_SEAT_ID, TV_INTERACTION_ID as GAMING_TV_INTERACTION_ID } from "../rooms/gaming";
@@ -19,7 +19,7 @@ import { CENTRAL_HUB, OPEN_BANDS as HUB_OPEN_BANDS,
   MONUMENT_INTERACTION_ID as HUB_MONUMENT_ID, SHELF_INTERACTION_ID as HUB_SHELF_ID, TOUCAN_PERCH,
   CHAMPIONSHIP_ENTRANCE_ID, RENDEZVOUS as HUB_RENDEZVOUS } from "../rooms/central-hub";
 import { EXECUTIVE_ROOM,
-  CABINET_L_INTERACTION_ID, CABINET_R_INTERACTION_ID, CREDENZA_INTERACTION_ID, DOOR_EAST_ID as EXEC_DOOR_EAST_ID,
+  CABINET_L_INTERACTION_ID, CABINET_R_INTERACTION_ID, CREDENZA_INTERACTION_ID, HR_SERVICES_INTERACTION_ID, DOOR_EAST_ID as EXEC_DOOR_EAST_ID,
   DOOR_WEST_ID as EXEC_DOOR_WEST_ID, EXECUTIVE_LOUNGE_IDS, EXECUTIVE_SEAT_IDS, MEDIA_INTERACTION_ID } from "../rooms/executive";
 import { CMS_ROOM,
   BOARD_INTERACTION_ID as CMS_BOARD_ID, CMS_LOUNGE_IDS, CMS_SEAT_IDS,
@@ -73,13 +73,17 @@ import { JobClient } from "../world/jobStore";
 import { DEMO_COMMAND, type JobCommandResult } from "../world/agentOrchestration";
 import { LAB_FLAGS } from "../world/labFlags";
 import { LAB_RESIDENTS } from "../world/labPopulation";
-import { aiLabV2StandTest, inAiLabV2Zone, buildLabV2Graph, LAB2_FLOOR_Y } from "../world/ailabV2";
+import { aiLabV3StandTest, inAiLabV2Zone, buildLabV2Graph, LAB2_FLOOR_Y, LAB_ROUTES, labV2Surfaces } from "../world/ailabV2";
+import { ziplineHold } from "../world/traversalRoutes";
+import { ZiplineTrolley } from "../world/ziplineRig";
+import { CAMPUS_BENCH_TOP, StandableIndex, standableFromBox, standableFromEntity, standableFromRect } from "../world/standables";
 import { buildAiLabV2 } from "../build/ailabV2";
 import { MonkeyCastRunner } from "../avatar/MonkeyCastRunner";
 import { LAB_V2_SCENARIOS } from "../world/labV2Scenarios";
 import { offsetGraph } from "../world/monkeyTraversal";
 /** THE AI LAB's walkability: the treehouse Lab's own stand test (the only Lab since Phase 6B.8) */
-const aiLabStandTest = aiLabV2StandTest;
+// PARKOUR V3 — height-aware (decks, the ramp, rails); asked without a height it is the Lab floor's test it always was
+const aiLabStandTest = aiLabV3StandTest;
 const inAiLabZone = inAiLabV2Zone;
 import { FACADE_WALL_T, RIDE_PROFILE, SURFACE_SPEED, WALK_PROFILE, exteriorGround, speedClassOf, type TraversalState } from "../world/exteriorGround";
 import { Environment, type EnvPresentation } from "../env/Environment";
@@ -92,10 +96,12 @@ import { ManualWeatherProvider } from "../env/providers/manual";
 import { WEATHER_ATTRIBUTION, officeWeatherProvider } from "../env/providers/office";
 import { GRADE } from "../world/campus";
 import { CAMERA_MODES, CameraModes, type CameraModeId } from "../render/CameraModes";
+import { gaitRate } from "../avatar/gait";
 import { PlayerMode, PLAYER_SPRINT_SPEED, PLAYER_WALK_SPEED, SPRINT_MULTIPLIER, type RideGround } from "../player/PlayerMode";
 import { EnvironmentalAudio } from "../audio/EnvironmentalAudio";
 import { EdgeTracker, Footsteps } from "../audio/events";
 import { CALL_RANGE, Toucan } from "../world/Toucan";
+import { ToucanPerch } from "../world/toucanPerch";
 import { toucanBusyWithJob } from "./toucanActivity";
 import type { ToucanSummonState } from "../../../components/OfficeMap/toucanSummon";
 import { spatial } from "../audio/sfx";
@@ -112,13 +118,25 @@ import { CORRIDOR_BANDS, ROOM_WORLD_SHIFT_Z } from "../rooms/ground-floor";
 // FloorTransition.ts), and one deliberately empty upper storey (rooms/floor2.ts). Nothing below this
 // import names "floor 2" except where a second floor is genuinely the subject; everything else reads
 // the registry, so a Gaming floor is a row plus its geometry rather than an edit to a state machine.
-import { FALLBACK_VIEW_MODE, FLOORS, FLOOR_ORDER, GROUND_FLOOR_ID, STOREY_H, arrivalViewMode, exteriorDrop, coworkersOnFloor, floorOfPlace, supportsViewMode, type Vo3dFloorId } from "./floors";
-import { CABIN, RIDE as ELEVATOR_RIDE, cabinStandTest, inCabin, inVestibule, vestibuleStandTest, type ElevatorSpec } from "../rooms/elevator";
+import { FALLBACK_VIEW_MODE, FLOORS, FLOOR_ORDER, GROUND_FLOOR_ID, STOREY_H, arrivalViewMode, elevatorNeedsPicker, exteriorDrop, coworkersOnFloor, floorOfPlace, isElevatorDestination, supportsViewMode, type Vo3dFloorId } from "./floors";
+import { CABIN, CEILING_H, RIDE as ELEVATOR_RIDE, cabinStandTest, inCabin, inVestibule, vestibuleStandTest, type ElevatorSpec } from "../rooms/elevator";
 import { buildCabin, buildElevatorCore, type ElevatorCoreBuild, type LiftBuild } from "../build/elevator";
-import { buildFloor2 } from "../build/floor2";
-import { buildFloor2Context } from "../build/floor2Context";
-import { DECK_TOP, SCOOTER_GEOMETRY, riddenScooterOrigin, scooterStations, type ScooterDock } from "../world/scooters";
-import { ELEVATOR as FLOOR2_ELEVATOR, FLOOR2_ID, FLOOR2_ROOM, FLOOR_RECT as FLOOR2_FLOOR_RECT, FRAME as FLOOR2_FRAME, floor2StandTest, onFloor2 } from "../rooms/floor2";
+import { buildFloor2, buildPlainFloor } from "../build/floor2";
+import { buildFloor2Context, buildStoreysBelow, type Floor2Context } from "../build/floor2Context";
+import { FLOOR3, FLOOR4 } from "../rooms/plainFloor";
+import { DECK_TOP, SCOOTER_GEOMETRY, riddenScooterOrigin, scooterStations, type ScooterDock, type Vo3dScooterAuthority, type Vo3dScooterState } from "../world/scooters";
+import { ScooterGate } from "./scooterGate";
+import { RemoteRiderDriver, RiderPoseOut, drawnHeading, type RelayedScooterPose, type RiderPose } from "./riderStream";
+import { DriftFx } from "../build/driftFx";
+import { TrafficTimeline, VEHICLE_WIDTH, carStepBlocked, poseAtArc, vehicleKey, type TrafficPose, type VehicleTimeline } from "../world/trafficHolds";
+import { ObstacleReporter, type ObstacleReport } from "../world/trafficObstacles";
+import { sweepContact, type ScooterAt } from "../world/scooterCrash";
+import { accidentPlan, chooseReach, riderFrameAt, scooterPoseAt, type AccidentPlan, type AccidentReach, type ClearTest, type RiderCrashFrame, type Vo3dAccident } from "../world/accidentMotion";
+import type { CrashBodyFrame } from "../avatar/crashPose";
+import { LIFT, liftPlan, liftScooterAt, riderLiftAt, type LiftPlan, type RiderLiftFrame } from "../world/liftMotion";
+import { TRAFFIC_LOOPS, buildLoopPath } from "../world/traffic";
+import { FLOOR2_ID, FLOOR2_ROOM, floor2StandTest } from "../rooms/floor2";
+import { ELEVATOR_CALL_IDS, UPPER_PLATES, exteriorAnchorFor, UPPER_PLATE_ROOM_IDS, onDetachedBuildingFloor, onUpperFloor, upperFloorStand, upperPlate, upperPlateAt } from "./floorPlates";
 import { makePlateRouter } from "../nav/plateRoute";
 import { buildMeetingFloor, setRoomDisplayTexture } from "../build/floor2Meeting";
 import { ISLAND, MEETING_ROOMS, MEETING_ROOM_DEFS, MEETING_ROOM_IDS, meetingDoorCapability, meetingRoom, meetingRoomAt } from "../rooms/floor2Meeting";
@@ -143,6 +161,8 @@ import { setSSAODepthReuse, ssaoDepthReuseEnabled } from "../render/SSAOFromDept
 import { createGraphicsEngine } from "../render/GraphicsEngine";
 import { GraphicsController } from "../../../services/render/graphicsController";
 import { Avatar } from "../avatar/Avatar";
+import { hasHumanBody, humanBodyFor, humanCatalogue } from "../avatar/humanBody";
+import { validOutfitItem, OUTFIT_SLOTS } from "../avatar/characterRuntime";
 import { ControllerStack, NavigationController } from "../avatar/Controller";
 import { SeatInteraction } from "../interact/Seat";
 import { EditSession, SNAP_DEGREES, SNAP_STEP } from "../editor/EditSession";
@@ -165,14 +185,15 @@ import { gateRects, mayEnterOffice, presenceZoneAt, routeEntersOffice, zoneAt, t
 import { Coworkers, facingTrace, type SeatAnchorPose } from "../world/Coworkers";
 import type { Vo3dCoworker } from "./coworkers";
 import { CAVE_PLACE_ID as CAVE_PLACE, coworkersInSameVolume } from "./coworkers";
-import type { Vo3dCoworkerInteractions, Vo3dCoworkerSelection, Vo3dScreenAnchor } from "./interactions";
+import type { Vo3dCoworkerInteractions, Vo3dCoworkerSelection, Vo3dObjectActionKey, Vo3dObjectSelection, Vo3dScreenAnchor } from "./interactions";
+import { describeInteractable, objectSelectionFor } from "./interactables";
 import { exploreFrameZoom, roomFrameMode, roomFrameRect, roomLabelRects, ROOM_FRAME_FILL } from "./roomFocus";
 import type { Vo3dViewMode } from "./viewMode";
 import { coworkerEmailOf, personCandidateId, REACH as TARGET_REACH, type Candidate } from "../player/PlayerTargeting";
 import { standablePointNear } from "../player/PlayerBody";
 import { markSeatFacingSaved, parseSeatAnchorId, SEAT_FACINGS, seatAnchorId, seatFacingFor, seatFacingTable, seatedYawFor, setSeatFacingOverride, subscribeSeatFacing, unsavedSeatFacingCount, type SeatFacing } from "./seats";
 import type { LoungeSeatSlot, SeatCapability } from "../world/WorldState";
-import { deskSeatContact } from "../interact/seatContact";
+import { deskSeatContact, seatedTuckFor } from "../interact/seatContact";
 import { FACING_YAW, circleOverlapsRect, pointInRect, stepAngle, wrapAngle, type Facing, type Rect, type Vec2 } from "../core/coords";
 
 /** PHASE 7C — THE CAVE MEETING, as the HUD sees it.
@@ -318,7 +339,12 @@ export interface Vo3dWorld {
    *
    *  Cosmetic and vertical only — it cannot move anybody, open a door or reach a room. Returns whether
    *  a body actually took off, for the verification surface. */
-  peerJumped(email: string, ageMs?: number): boolean;
+  peerJumped(email: string, ageMs?: number, at?: number, seq?: number): boolean;
+  /** PARKOUR V1 — a peer double-jumped (with its flip) or rolled on landing; same staleness and ordering as a jump */
+  peerParkour(email: string, kind: "double" | "roll" | "vault" | "mantle", ageMs?: number, at?: number, seq?: number, ms?: number, rise?: number, apex?: number): boolean;
+  /** PARKOUR V3 — a peer started a declared route (a ladder, the zipline) `p0` of the way along, or cut it short */
+  peerRoute(email: string, route: string, dir: "a" | "b", ageMs?: number, at?: number, seq?: number, p0?: number): boolean;
+  peerRouteHalt(email: string, end: "start" | "exit", at?: number, seq?: number): boolean;
   /** PHASE 5 — V1'S ANSWER ABOUT THIS EMPLOYEE'S WORK SESSION, pushed in from outside.
    *
    *  The world never asks: app/Vo3dHost.tsx owns the read (adapters/v1Attendance over V1's own
@@ -456,6 +482,26 @@ export interface Vo3dWorld {
    *  granted inside a user gesture, so entering PLAYER has to ask from the keypress that entered it
    *  rather than waiting for a click on the world. A no-op outside PLAYER. */
   requestPointerLock(): void;
+  /** AN INTERACTION MENU IS OPEN over the world (app/menuPointer): PLAYER's look, clicks and verbs stand
+   *  down while it is, and the guided-journey Escape leaves the press to the menu */
+  setInteractionMenuOpen(open: boolean): void;
+  /** THE SERVER CLOCK, server − local in ms (the movement feed's measurement): the campus traffic runs on it
+   *  so every browser sees the same car in the same place (world/trafficClock) */
+  setServerClockOffset(ms: number): void;
+  /** S1 — THE SERVER'S SCOOTER REGISTRY: how the world asks to ride (null: single-player, no asking) */
+  setScooterAuthority(authority: Vo3dScooterAuthority | null): void;
+  /** S1 — the server's word on the scooters; `full` for a whole snapshot (connect / reconnect) */
+  applyScooterStates(list: readonly Vo3dScooterState[], full: boolean): void;
+  /** S2 — another rider's pose, as relayed by the server */
+  pushScooterPose(p: RelayedScooterPose): void;
+  /** S4 — the server's traffic holds (every stopped car, and every car making up lost time) */
+  applyTrafficHolds(list: readonly { loop: string; vehicle: number; d0: number; t0: number; hold: VehicleTimeline["hold"] }[]): void;
+  /** S4 — how this world tells the server its employee is in a car's way (null: it does not) */
+  setTrafficReporter(report: ((r: ObstacleReport) => void) | null): void;
+  /** S5 — every scooter accident in progress (the server's word) */
+  applyScooterAccidents(list: readonly Vo3dAccident[]): void;
+  /** hand the pointer back after a menu, quietly — refused, the next click on the canvas does it */
+  resumePointerLock(): void;
   /** True while the browser refused our last request and unlocked mouse-look is carrying the mode. */
   subscribeLockState(listener: (locked: boolean, unlockedLook: boolean) => void): () => void;
   /** PART 4 — first- or third-person inside PLAYER. A no-op outside it. */
@@ -478,6 +524,12 @@ export interface Vo3dWorld {
    *  world so the two agree on who is selected: without it the world would still hold the last person and
    *  a second click on the SAME body would be recognised as "already selected" and open nothing. */
   clearCoworkerSelection(): void;
+  /** INTERACTION V2 — WHERE A SELECTED OBJECT IS ON SCREEN (its card follows it, like a person's) */
+  objectAnchor(id: string): Vo3dScreenAnchor | null;
+  /** ...run one row of its menu (app/interactables), through the same starters PLAYER's E reaches */
+  runObjectAction(id: string, key: Vo3dObjectActionKey): void;
+  /** ...and the host closed the card (Escape, an outside press): resync, tell nobody */
+  clearObjectSelection(): void;
   /** ROOM DISCOVERY — EVERY ROOM THAT CAN CARRY A LABEL, by V1 manifest room id, in a stable order.
    *  Read ONCE by the label layer to build its DOM; the positions come from roomLabelAnchors below. */
   roomLabelIds(): string[];
@@ -740,12 +792,18 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // WHICH FLOOR YOU ARE ON and nothing else, and the pointer pick below raycasts them beside the office.
   const groundElevatorBuild: ElevatorCoreBuild = buildElevatorCore(GROUND_ELEVATOR, FLOORS[GROUND_FLOOR_ID].indicator);
   R.scene.add(groundElevatorBuild.group);
+  /** EVERY FLOOR'S LIFT ENTRANCE BUILD, by floor — filled in as each floor is built, read by the lift */
+  const coreBuilds: Partial<Record<Vo3dFloorId, ElevatorCoreBuild>> = { [GROUND_FLOOR_ID]: groundElevatorBuild };
+  /** EVERY UPPER FLOOR'S ROOT, by floor: one visibility flag each (applyWorldVisibility) */
+  const floorRoots = new Map<Vo3dFloorId, THREE.Group>();
   // FLOOR 2, built once and added to the SCENE as a sibling of the office and the CAVE — three volumes,
   // never two of them drawn at the same time, each turned off whole by one visibility flag. It comes back
   // HIDDEN: an empty upper storey nobody is standing on costs exactly nothing.
   const floor2Root = new THREE.Group();
   floor2Root.name = "floor-2-root";
-  const floor2ElevatorBuild: ElevatorCoreBuild = buildElevatorCore(FLOOR2_ELEVATOR, FLOORS[FLOOR2_ID].indicator);
+  const floor2ElevatorBuild: ElevatorCoreBuild = buildElevatorCore(ELEVATORS[FLOOR2_ID], FLOORS[FLOOR2_ID].indicator);
+  coreBuilds[FLOOR2_ID] = floor2ElevatorBuild;
+  floorRoots.set(FLOOR2_ID, floor2Root);
   // THE STOREY BELOW FLOOR 2: the podium and the ground storey's mass, under the plate. The view out of
   // the windows is NOT built here — it is the ground floor's own campus and AI Lab, re-anchored one storey
   // down by `applyFloor` (build/floor2Context explains the split). Drawn with floor 2, nowhere else.
@@ -775,6 +833,27 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   floor2ElevatorBuild.group.visible = false;
   R.scene.add(floor2ElevatorBuild.group);
   R.scene.add(floor2Root);
+  /** EVERY UPPER FLOOR'S STOREYS-BELOW MASS, re-seated together when the storey height changes */
+  const storeyContexts = new Map<Vo3dFloorId, Floor2Context>([[FLOOR2_ID, floor2Context]]);
+  // FLOORS 3 AND 4 — EMPTY PLATES (rooms/plainFloor): floor 2's own shell (plinth, tile, curtain wall,
+  // cove) in each floor's tone, the building's mass under it, and its lift entrance. A few dozen meshes
+  // each, every material one floor 2 already compiled, built hidden like floor 2 and drawn only while
+  // somebody is on them.
+  for (const [plan, tone] of [[FLOOR3, "hallTileCompass"], [FLOOR4, "hallTileSocial"]] as const) {
+    const id = plan.id as Vo3dFloorId;
+    const root = new THREE.Group();
+    root.name = `${id}-root`;
+    const ctx = buildStoreysBelow(plan.frame, FLOORS[id].level, exteriorDrop(id, storeyH), `${id}-storeys-below`);
+    root.add(buildPlainFloor(plan, tone), ctx.group);
+    root.visible = false;
+    const core = buildElevatorCore(ELEVATORS[id], FLOORS[id].indicator);
+    core.group.visible = false;
+    coreBuilds[id] = core;
+    floorRoots.set(id, root);
+    storeyContexts.set(id, ctx);
+    R.scene.add(core.group);
+    R.scene.add(root);
+  }
   // THE CABIN: ONE car for the whole building, standing ALONE at x 9000 where nothing else in this world
   // reaches. Nothing crosses it and it crosses nothing — which is the entire reason it is out there
   // rather than sticking out of the Meeting Room's west wall the way the first build's did. Hidden until
@@ -1143,9 +1222,28 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   const avatarLods: Record<AvatarLod, string> | null | undefined =
     identity === undefined ? (devAvatar && hasCastLods(devAvatar) ? castLods(devAvatar) : undefined)
     : identity.avatarId && hasCastLods(identity.avatarId) ? castLods(identity.avatarId) : null;
+  // HUMANBASE-ONLY EMPLOYEE (no legacy GLB at all, e.g. Lui): no legacy LODs, but a HumanBase body — so not
+  // missing, and the Avatar gets `lods: null` (a HumanBase failure leaves the body empty, never Bon's).
+  const humanOnly = identity !== undefined && avatarLods === null && hasHumanBody(identity.avatarId);
   /** True when this world knows WHO the player is but has no character to put them in. */
-  const avatarMissing = avatarLods === null;
-  const avatar = new Avatar({ height: BON_STANDING_HEIGHT, lit: params.avatarLit, lods: avatarLods ?? undefined });
+  const avatarMissing = avatarLods === null && !humanOnly;
+  // HUMANBASE BODY (production integration, Phase 1): an employee enabled in avatar/humanBody wears the shared
+  // HumanBase runtime — same Avatar API, so every controller / interaction below is unchanged. Identity stays the
+  // session's; only the appearance comes from humanBody. Rollback: `?humanbase=0`, or the HUMANBASE_ENABLED set.
+  // (The standalone page, no identity, opts in with `?humanbase=1`.)
+  const humanCastId = identity === undefined ? (flags.get("humanbase") === "1" ? (devAvatar ?? "bon") : null) : (avatarMissing ? null : identity.avatarId ?? null);
+  const humanConfig = humanBodyFor(humanCastId);
+  const avatar = new Avatar({ height: BON_STANDING_HEIGHT, lit: params.avatarLit, lods: humanOnly ? null : avatarLods ?? undefined, human: humanConfig ? { config: humanConfig, catalogue: humanCatalogue() } : null });
+  // CHARACTER STUDIO (dev-only): this employee saved a new outfit — re-dress the body in place (HumanAvatar.equip swaps garments
+  // only: never the head, the skeleton or the mixer). Anyone else's body is not this one, and every other viewer picks the
+  // outfit up the next time they build this employee (it is in avatar/characterRuntime already).
+  onWindow("vo:character-outfit", (e) => {
+    if (disposed || !humanCastId || e.detail.castId !== humanCastId || !avatar.human) return;
+    for (const slot of OUTFIT_SLOTS) {
+      const it = e.detail.outfit[slot];
+      if (validOutfitItem(slot, it)) void avatar.human.equip(slot, it.assetId, it.colorway).catch((err: unknown) => console.warn(`[vo3d] outfit ${slot} not applied`, err));
+    }
+  });
   R.scene.add(avatar.root);
   // Bon is a DYNAMIC shadow caster: his body is composited over the cached static shadow depth every frame
   // he moves, instead of dragging the whole ground floor through the shadow pass with him. See Renderer.
@@ -1156,6 +1254,23 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // the controller's own class default is the figure the walk clip was authored for, and would otherwise
   // leave the panel reading 70 while a planned walk still ambled at 30.
   navCtl.speed = params.walkSpeed;
+  /** INTERACTION V2 — OFFICE VIEW TRAVELS FAST-FORWARD. A routed walk started from Office View (right-click, Approach,
+   *  Sit, the lift, a fixture) moves at OFFICE_TRAVEL_SPEED with the walk played fast (avatar/gait walkRate) —
+   *  V1's quick click-to-walk. Player View keeps its own walk, sprint and momentum, untouched; a guided journey
+   *  (Go Together) keeps the ordinary walk, because its party is paced and compared side by side. */
+  const OFFICE_TRAVEL_SPEED = 150;
+  // read through a seam: PLAYER mode is constructed further down, and a walk planned before it exists (a restore,
+  // a tour) is an Office View walk
+  let playerViewActive = (): boolean => false;
+  const travelSpeed = (): number => (playerViewActive() || stack.guided ? params.walkSpeed : OFFICE_TRAVEL_SPEED);
+  /** set the walker's pace from the view NOW and return it — called where a walk is planned, so the duration
+   *  published to peers is the one the body will really take */
+  function syncTravelSpeed(): number {
+    const v = travelSpeed();
+    navCtl.speed = v;
+    navCtl.fastForward = v > params.walkSpeed;
+    return v;
+  }
   /** The player label for the dev readout: who this world thinks you are, and which character it drew.
    *  Name and character id only — never the email, the id or anything from the session. */
   const who = identity
@@ -1174,7 +1289,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       if (disposed) return; // LIFECYCLE: the world was unmounted while this was in flight
       R.markDynamicCaster(avatar.root); // the meshes only exist now — re-mark the subtree
       R.invalidateShadows(); // a body just entered the scene; it has to enter the shadow map too
-      avatarState.status = `LOD${params.avatarLod} loaded · native ${avatar.nativeHeight.toFixed(2)} → ${BON_STANDING_HEIGHT} units`;
+      avatarState.status = avatar.runtime === "humanbase" ? `HumanBase ${humanConfig?.employeeId} · ${BON_STANDING_HEIGHT} units` : `LOD${params.avatarLod} loaded · native ${avatar.nativeHeight.toFixed(2)} → ${BON_STANDING_HEIGHT} units`;
       avatarState.triangles = Math.round(avatar.triangles);
       // PHASE 6C — a seated RESTORE that landed before the GLB did was posed without the clip's hip data
       // (seatContact reads it from the loaded rig). Re-pose it now, in place, with the real numbers.
@@ -1245,8 +1360,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
           enteredPlace: (at, yaw, room, localAt) => selfMovement.enteredPlace(toV1Frame(at), yaw, room, localAt),
           // The ANCHOR goes through the V1 frame mapping like every other V1 coordinate; `from`/`to`
           // are world points in the place's own frame and are deliberately NOT converted.
-          movedInPlace: (anchor, from, to, yaw, room) =>
-            selfMovement.movedInPlace(toV1Frame(anchor), from, to, yaw, room),
+          movedInPlace: (anchor, from, to, yaw, room, durationMs, pacing) =>
+            selfMovement.movedInPlace(toV1Frame(anchor), from, to, yaw, room, durationMs, pacing),
           // An upstairs sit (a Meeting Floor chair): anchor mapped like movedInPlace's, the chair's own
           // point left in the place's frame. Absent on a sink without it — the sit then stays local.
           ...(selfMovement.satInPlace ? { satInPlace: (anchor: Vec2, at: Vec2, yaw: number, room: string, seat: string) => selfMovement.satInPlace!(toV1Frame(anchor), at, yaw, room, seat) } : {}),
@@ -1619,7 +1734,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // it and A*s over it — and no cell of that grid describes anything outside the ground floor. Floor 2
     // is routed on its OWN geometry instead: a grid sampled from the floor's own stand test (glass rooms,
     // tables, lounge, lift core), so a route can never pass anything that same test would stop.
-    if (onFloor2({ x, z })) return walkOnFloor(currentFloor, { x, z });
+    if (onUpperFloor({ x, z })) return walkOnFloor(currentFloor, { x, z });
     // THE BOUNDARY, STATED RATHER THAN IMPLIED. The closed lanes already make an office destination
     // unreachable, so this changes no outcome — it changes the REASON, from "unreachable" (which reads as
     // a pathfinding failure) to a refusal the readout can name. The router is still the thing that
@@ -1651,7 +1766,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
         const origin = avatar.position;
         if (navCtl.setPath(toDoor.path)) {
           selfMovedByUser = true;
-          selfFeed?.planned(origin, toDoor.path, plannedDurationMs(origin, toDoor.path, navCtl.speed), guidedPacing());
+          selfFeed?.planned(origin, toDoor.path, plannedDurationMs(origin, toDoor.path, syncTravelSpeed()), guidedPacing());
         }
       }
       return refused;
@@ -1674,7 +1789,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       const origin = avatar.position;
       if (navCtl.setPath(result.path)) {
         selfMovedByUser = true;
-        selfFeed?.planned(origin, result.path, plannedDurationMs(origin, result.path, navCtl.speed), guidedPacing());
+        selfFeed?.planned(origin, result.path, plannedDurationMs(origin, result.path, syncTravelSpeed()), guidedPacing());
       }
     }
     return result;
@@ -1687,20 +1802,23 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  it: it samples the real position every few units and publishes each leg inside the place it has
    *  been told about (app/selfMovement's localLeg). Announcing it twice would be the one way to get two
    *  different accounts of the same walk onto the wire. */
-  const floor2Router = makePlateRouter(FLOOR2_FLOOR_RECT, (p) => floor2StandTest(p, NAV_RADIUS));
+  /** ONE ROUTER PER UPPER PLATE, sampled from that plate's own stand test (lazily — nav/plateRoute) */
+  const plateRouters = new Map(UPPER_PLATES.map((pl) => [pl.id, makePlateRouter(pl.floorRect, (p: Vec2) => pl.standTest(p, NAV_RADIUS))] as const));
   /** THE MEETING FLOOR'S ROOM ACCESS (app/meetingRoomAccess): every room available until a meeting system
    *  says otherwise. Room privacy, never presence. */
   const meetingAccess = new MeetingRoomAccess();
   /** ONE PLANNER FOR EVERY INTERACTION'S WALK: the ground floor's lattice below, the Meeting Floor's own
    *  routed grid up there. A seat, a sofa and a display on floor 2 are reached exactly like one downstairs. */
   const planFor = (to: Vec2): NavResult => {
-    if (!onFloor2(to)) return planWalk(avatar.position, to, walkability, inBounds);
-    const path = floor2Router.route(avatar.position, to);
+    const plate = upperPlateAt(to);
+    if (!plate) return planWalk(avatar.position, to, walkability, inBounds);
+    const path = plateRouters.get(plate.id)!.route(avatar.position, to);
     return path ? { ok: true, destination: { ...to }, path, cell: worldToCell(to) } : { ok: false, reason: "unreachable", destination: { ...to }, cell: worldToCell(to) };
   };
   function walkOnFloor(floor: Vo3dFloorId, to: Vec2): NavResult {
     const from = { ...avatar.position };
-    const standable = floor === FLOOR2_ID ? (p: Vec2) => floor2StandTest(p, NAV_RADIUS) : (p: Vec2) => playerStand(p);
+    const plate = upperPlate(floor);
+    const standable = plate ? (p: Vec2) => plate.standTest(p, NAV_RADIUS) : (p: Vec2) => playerStand(p);
     const cell = worldToCell(to);
     if (!standable(to)) {
       navState.last = `rejected: nothing standable at ${to.x.toFixed(0)}, ${to.z.toFixed(0)} on ${floor}`;
@@ -1715,12 +1833,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       const shut = meetingAccess.routeRefused(from, to);
       if (shut) {
         const door = meetingRoom(shut)!.approach;
-        const toDoor = floor2Router.route(from, door);
+        const toDoor = plateRouters.get(FLOOR2_ID)!.route(from, door);
         navState.last = `held: ${shut} is in a private meeting — walking to its door`;
         if (toDoor && navCtl.setPath(toDoor)) selfMovedByUser = true;
         return { ok: false, reason: "unreachable", destination: to, cell };
       }
-      const routed = floor2Router.route(from, to);
+      const routed = plateRouters.get(FLOOR2_ID)!.route(from, to);
       if (!routed) {
         navState.last = `rejected: no route across ${floor} to ${to.x.toFixed(0)}, ${to.z.toFixed(0)}`;
         return { ok: false, reason: "unreachable", destination: to, cell };
@@ -1766,7 +1884,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     return { ...spec, seatedYaw: seatedYawFor(entityId, spec.seatedYaw) };
   };
   const slotFor = (entityId: string, slot: LoungeSeatSlot): LoungeSeatSlot => ({ ...slot, seatedYaw: seatedYawFor(seatAnchorId(entityId, slot.id), slot.seatedYaw) });
-  let seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), seatSpecFor(CHAIR_4_ID), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+  let seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), seatSpecFor(CHAIR_4_ID), (to) => planWalk(avatar.position, to, walkability, inBounds), () => travelSpeed());
   const seatState = { state: "idle", chairRestError: 0 };
   // the automatic east door: reacts to Bon's route, owns only its own leaf (navigation keeps owning Bon)
   const doorEntity = world.get(DOOR_ID);
@@ -1916,7 +2034,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     approachCtl.cancel();
     clearSeats();
     currentSeatAnchor = id;
-    otherSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), planFor, () => params.walkSpeed);
+    otherSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), planFor, () => travelSpeed());
     otherSeat.sit();
   }
   /** The chair's own seated yaw for an anchor — what the seated arrival publishes, rather than the body's
@@ -1940,7 +2058,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     R.invalidateShadows(); // SEE clearSeats: a reset SNAPS a chair back and nothing else will report it
     const id = GAMING_CHAIR_IDS[index];
     currentSeatAnchor = id;
-    gamingSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    gamingSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => travelSpeed());
     gamingState.chair = `station ${index}`;
     gamingSeat.sit();
   }
@@ -1980,7 +2098,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     clearSeats();
     const id = CAFE_CHAIR_IDS[index];
     currentSeatAnchor = id;
-    hubSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    hubSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => travelSpeed());
     hubState.chair = id.split("/")[1];
     hubSeat.sit();
   }
@@ -1992,7 +2110,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     clearSeats();
     const id = EXECUTIVE_SEAT_IDS[index];
     currentSeatAnchor = id;
-    execSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    execSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => travelSpeed());
     execState.chair = id.split("/")[1];
     execSeat.sit();
   }
@@ -2004,7 +2122,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     clearSeats();
     const id = CMS_SEAT_IDS[index];
     currentSeatAnchor = id;
-    cmsSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    cmsSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => travelSpeed());
     cmsState.chair = id.split("/")[1];
     cmsSeat.sit();
   }
@@ -2017,7 +2135,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     clearSeats();
     const id = AI_SEAT_IDS[index];
     currentSeatAnchor = id;
-    aiSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    aiSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => travelSpeed());
     aiState.chair = id.split("/")[1];
     aiSeat.sit();
   }
@@ -2030,7 +2148,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     clearSeats();
     const id = DEV_SEAT_IDS[index];
     currentSeatAnchor = id;
-    devSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    devSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => travelSpeed());
     devState.chair = id.split("/")[1];
     devSeat.sit();
   }
@@ -2043,7 +2161,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     clearSeats();
     const id = QA_SEAT_IDS[index];
     currentSeatAnchor = id;
-    qaSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    qaSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => travelSpeed());
     qaState.chair = id.split("/")[1];
     qaSeat.sit();
   }
@@ -2052,7 +2170,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     clearSeats();
     const id = MEETING_CHAIR_IDS[index];
     currentSeatAnchor = id;
-    meetingSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    meetingSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => travelSpeed());
     meetingState.chair = id.split("/")[1];
     meetingSeat.sit();
   }
@@ -2077,7 +2195,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // reception desk, the monument — was set on the walker but never announced, so every other browser
       // saw this body frozen where it started while it walked (Go Together: the leader "stuck" at the Hub).
       const origin = avatar.position;
-      if (navCtl.setPath(r.path)) selfFeed?.planned(origin, r.path, plannedDurationMs(origin, r.path, navCtl.speed), guidedPacing());
+      if (navCtl.setPath(r.path)) selfFeed?.planned(origin, r.path, plannedDurationMs(origin, r.path, syncTravelSpeed()), guidedPacing());
     }
     return r.ok;
   }
@@ -2092,7 +2210,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     devSeat = null;
     const s = loungeSeats[index];
     currentSeatAnchor = seatAnchorId(s.id, s.slot.id);
-    loungeSeat = new LoungeSeatInteraction(avatar, stack, s.view, slotFor(s.id, s.slot), planFor, () => params.walkSpeed);
+    loungeSeat = new LoungeSeatInteraction(avatar, stack, s.view, slotFor(s.id, s.slot), planFor, () => travelSpeed());
     receptionState.focus = s.label;
     loungeSeat.sit();
   }
@@ -2108,7 +2226,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     const r = canvas.getBoundingClientRect();
     ndc.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
     raycaster.setFromCamera(ndc, R.activeCamera);
-    const hits = raycaster.intersectObjects([mirror.root, groundElevatorBuild.group, floor2ElevatorBuild.group, ...(floor2Root.visible ? [floor2Root] : [])], true);
+    const hits = raycaster.intersectObjects([mirror.root, ...FLOOR_ORDER.map((f) => coreOf(f).group), ...[...floorRoots.values()].filter((r) => r.visible)], true);
     if (!hits.length) return null;
     const byPick = new Map<string, string>();
     for (const e of world.entities.values()) {
@@ -2183,14 +2301,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // FLOOR 2 answers from its own geometry for the same reason the CAVE does: it stands outside V1's
     // 90 x 78 lattice, so neither the V1-governed layer nor DerivedNav (both indexed by that lattice)
     // has anything to say about it. Its perimeter wall and its lift core stop a body exactly as the
-    // office's walls do — rooms/floor2.ts floor2StandTest is the only place that is decided.
+    // office's walls do — its plate's stand test (app/floorPlates.ts) is the only place that is decided.
     // THE CAR, when one is docked. It is a room that moves, so no floor's lattice describes it and it
     // answers from its own geometry — the same routing of the question the CAVE and floor 2 take. Asked
     // FIRST of the two floor tests, because while the car is standing at a core its interior overlaps
     // whatever that floor has behind the wall, and the car is what the body is actually inside.
     : liftActive() && inCabin(p) ? cabinStandTest(p, NAV_RADIUS)
     : vestibuleOf(p) !== null ? vestibuleStandTest(vestibuleOf(p)!, p, NAV_RADIUS)
-    : onFloor2(p) ? floor2StandTest(p, NAV_RADIUS)
+    : onUpperFloor(p) ? upperFloorStand(p, NAV_RADIUS)
     : inAiLabZone(p, NAV_RADIUS) ? aiLabStandTest(p, NAV_RADIUS)
     : officeStand(p);
   /** The third-person boom's probe. Same composition, a token radius: the camera must not end up inside a
@@ -2201,7 +2319,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     inCave(p) ? caveStandTest(p, 2)
     : liftActive() && inCabin(p) ? cabinStandTest(p, 2)
     : vestibuleOf(p) !== null ? vestibuleStandTest(vestibuleOf(p)!, p, 2)
-    : onFloor2(p) ? floor2StandTest(p, 2)
+    : onUpperFloor(p) ? upperFloorStand(p, 2)
     : inAiLabZone(p, 2) ? aiLabStandTest(p, 2)
     : officeCameraProbe(p);
   // ---- THE CAMPUS ON FOOT (world/exteriorGround, Phase 3) --------------------------------------------
@@ -2220,37 +2338,112 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   const inOfficeDomain = (p: Vec2): boolean => pointInRect(p, FRAME) && (p.z < FACADE_Z + FACADE_WALL_T || pointInRect(p, ENTRY_ZONE));
   const inLabDomain = (p: Vec2): boolean => ground.groundAt(p).kind === "lab-interior";
   const foreignOwner = (q: Vec2): boolean | null => (inOfficeDomain(q) ? officePoint(q) : inLabDomain(q) ? aiLabStandTest(q, 1e-3) : null);
+  // ---- PARKOUR V1: STANDABLE TOPS, ONE INDEX FOR THE WHOLE WORLD (world/standables) -------------------------
+  // Indexed wherever the floor-level test can be told which pieces a body's feet have cleared: the office's
+  // reconstructed rooms (DerivedNav names each footprint) and the campus (its solids are named). Everywhere else
+  // — the V1 hall grid, the upper plates, the Lab, the Cave — a piece keeps blocking at every height, exactly as
+  // before, so it is simply not indexed. Eligibility is the piece's own data (seat, lounge, a flat-topped kind),
+  // never its height: walls, door architecture, glass and the Reception balustrade are never in here.
+  const standables = new StandableIndex([
+    ...[...world.entities.values()].flatMap((e) => {
+      const c = worldToCell(e.transform.pos);
+      if (!inOfficeDomain(e.transform.pos) || !derivedNav.governs(c.cx, c.cy)) return [];
+      const s = standableFromEntity(e);
+      return s ? [s] : [];
+    }),
+    // the campus benches (not the Lab terrace's, which have no measured top): their seat above the ground each stands on
+    ...ground.solids.flatMap((s) =>
+      s.kind === "bench" && s.id.startsWith("bench:") && "box" in s
+        ? [standableFromBox(s.id, ground.groundAt({ x: s.box.x, z: s.box.z }).y + CAMPUS_BENCH_TOP, s.box)]
+        : []),
+    // PARKOUR V2 — every floor above this one that declares its own (the Meeting Floor today; a future floor opts in
+    // through its plate's `standables`), by the ids its own stand test excuses
+    ...UPPER_PLATES.flatMap((plate) => plate.standables?.() ?? []),
+    // PARKOUR V2 — the Reception rail sections approved for vaulting (rooms/reception): vault-only, never a top
+    ...RECEPTION_VAULT_RAILS.map((r) => standableFromRect(r.id, r.top, r.rect, { stand: false, vault: true })),
+    // PARKOUR V3 — the AI Lab's treehouse: both decks, the ramp, the jump stump (world/ailabV2, its own declared data)
+    ...labV2Surfaces(),
+  ]);
+  /** how close to a piece's outline a body's centre must be to stand on it: well inside the body radius, so a body
+   *  beside a piece (held NAV_RADIUS off it at floor level) is never mistaken for one on top of it */
+  const STAND_TOP_R = 3;
+  /** the highest standable top under a body at `p` (−Infinity when none) — PARKOUR V3: with `feet`, only tops at or a
+   *  step above them, which is how stacked decks are told apart (a body on L1 stands on L1 beneath L2) */
+  const topUnder = (p: Vec2, feet?: number): number => standables.topUnder(p, STAND_TOP_R, feet === undefined ? Infinity : feet + WALK_PROFILE.stepUp);
+  /** the pieces a body moving with known feet has cleared: with a step up on the floor, with the air clearance in
+   *  the air. Only these stop being obstacles to it; everything else blocks exactly as it always did. */
+  const clearedBy = (p: Vec2, motion?: TraversalState): ReadonlySet<string> | undefined => {
+    if (!motion) return undefined;
+    const ids = standables.cleared(p, NAV_RADIUS + 0.5, motion.feet + (motion.airborne ? WALK_PROFILE.airClear : WALK_PROFILE.stepUp));
+    return ids.size ? ids : undefined;
+  };
   // `motion` (TRAVERSAL): a body moving with known feet — the campus judges its edges against them (a jump
-  // clears a ledge its feet clear; see world/exteriorGround TraversalState). Every floor of the building is
-  // flat and ignores it.
-  const playerStand = (p: Vec2, motion?: TraversalState): boolean =>
-    inCave(p) ? caveStandTest(p, NAV_RADIUS)
+  // clears a ledge its feet clear; see world/exteriorGround TraversalState), and (PARKOUR V1) both the office and
+  // the campus stop treating a standable top as solid once those feet have cleared it.
+  //  `excuse` (PARKOUR V2): the ONE obstacle a planned vault is crossing (player/traversal) — added to what the feet
+  //  have cleared, on the floors that can name their pieces; everything else is judged exactly as before.
+  const withExcuse = (a: ReadonlySet<string> | undefined, b: ReadonlySet<string> | undefined): ReadonlySet<string> | undefined =>
+    !b ? a : !a ? b : new Set([...a, ...b]);
+  const playerStand = (p: Vec2, motion?: TraversalState, excuse?: ReadonlySet<string>): boolean =>
+    inCave(p) ? caveStandTest(p, NAV_RADIUS, motion, excuse)
     : liftActive() && inCabin(p) ? cabinStandTest(p, NAV_RADIUS)
     : vestibuleOf(p) !== null ? vestibuleStandTest(vestibuleOf(p)!, p, NAV_RADIUS)
-    : onFloor2(p) ? floor2StandTest(p, NAV_RADIUS)
-    : inLabDomain(p) ? aiLabStandTest(p, NAV_RADIUS)
-    : inOfficeDomain(p) ? officeStand(p)
-    : ground.canOccupy(p, WALK_PROFILE.footRadius, WALK_PROFILE, foreignOwner, undefined, motion);
+    : onUpperFloor(p) ? upperFloorStand(p, NAV_RADIUS, withExcuse(clearedBy(p, motion), excuse))
+    // PARKOUR V3 — the Lab judges its own bands from the feet (world/heightSolids), with a vault's excuse
+    : inLabDomain(p) ? aiLabStandTest(p, NAV_RADIUS, motion, excuse)
+    : inOfficeDomain(p) ? officeStand(p, undefined, withExcuse(clearedBy(p, motion), excuse))
+    : ground.canOccupy(p, WALK_PROFILE.footRadius, WALK_PROFILE, foreignOwner, withExcuse(clearedBy(p, motion), excuse), motion);
   /** is `p` judged by the campus ground model (not a floor of the building, the Lab's, the Cave or the lift)? */
   const onCampus = (p: Vec2): boolean =>
-    !(inCave(p) || (liftActive() && inCabin(p)) || vestibuleOf(p) !== null || onFloor2(p) || inLabDomain(p) || inOfficeDomain(p));
+    !(inCave(p) || (liftActive() && inCabin(p)) || vestibuleOf(p) !== null || onUpperFloor(p) || inLabDomain(p) || inOfficeDomain(p));
   /** THE GROUND UNDER A POINT: the campus's own heights outside (and the Lab's floor), 0 everywhere a floor
    *  of the building answers — the office, floor 2, the Cave, the lift. Avatar, PlayerMode's camera and
    *  every remote body stand on it. */
-  const groundYAt = (p: Vec2): number => (inCave(p) || onFloor2(p) || inOfficeDomain(p) ? 0 : ground.groundAt(p).y);
+  //  THE LIFT CABIN IS A FLOOR TOO: it stands at x 9000, off the campus, where the ground model has nothing
+  //  but open terrain at GRADE — asking it sank every rider ~8 units into the car's floor for the ride.
+  const groundYAt = (p: Vec2): number => (inCave(p) || onDetachedBuildingFloor(p) || inOfficeDomain(p) ? 0 : ground.groundAt(p).y);
   avatar.ground = groundYAt;
   /** TRAVERSAL — the floor a walker's footprint rests on: the campus's highest ground under it, a floor's own
    *  height everywhere else */
-  const playerSupport = (p: Vec2): number => (onCampus(p) ? ground.support(p, WALK_PROFILE.footRadius) : groundYAt(p));
+  const playerSupport = (p: Vec2, feet?: number): number => Math.max(onCampus(p) ? ground.support(p, WALK_PROFILE.footRadius) : groundYAt(p), topUnder(p, feet));
+  /** PARKOUR V1 — the floor the player STANDS on at a point: the avatar's own ground, or a standable top under it */
+  const playerGround = (p: Vec2, feet?: number): number => Math.max(avatar.groundAt(p), topUnder(p, feet));
+  /** PARKOUR V1 — HEADROOM: the highest the FEET may rise at a point (a ceiling or a deck above, less the body and a
+   *  hand's breadth). Open sky everywhere else — every storey of the building is far taller than a double jump. */
+  const HEAD_CLEAR = BON_STANDING_HEIGHT + 1;
+  //  PARKOUR V3: no deck is named here any more — any PLATFORM in the index over the head (world/standables
+  //  ceilingAbove) is a ceiling, judged from where the feet are, so a body on L1 has L2 over it and one on L2 has sky.
+  const headroomAt = (p: Vec2, feet?: number): number => {
+    if (liftActive() && inCabin(p)) return CEILING_H - HEAD_CLEAR;
+    return standables.ceilingAbove(p, NAV_RADIUS - 1, feet ?? playerGround(p)) - HEAD_CLEAR;
+  };
   /** outside, the camera is stopped by what is really there — the building's mass and the tall solids —
    *  never by lawn or a lower path; the ground model's walkability is not the camera's business */
   const CAMERA_SOLIDS = ["lab-wall", "lab-cheek", "vehicle", "monument-sign", "lot-marker", "cave-shell", "tree", "lamp", "rack"];
   const campusCameraClear = (p: Vec2): boolean => { const hit = ground.solidAt(p, 2); return !hit || !CAMERA_SOLIDS.some((k) => hit.startsWith(k)); };
+  /** INTERACTION V2 — ONE SPACE: both points in the same room region (or both in shared, room-less floor), or
+   *  within a doorway's width of each other. What stops a coworker on the far side of a wall being offered. */
+  function sameSpace(from: Vec2, to: Vec2): boolean {
+    if (Math.hypot(to.x - from.x, to.z - from.z) <= 24) return true;
+    return (world.regionAt(from)?.roomId ?? "") === (world.regionAt(to)?.roomId ?? "");
+  }
+  /** INTERACTION V2 — A CLEAR VIEW along the floor between two points, sampled every 6 units against the camera
+   *  probe (walls, closed barriers, furniture, unbuilt space). The ends are not sampled: both stand in a footprint. */
+  function lineOfSight(from: Vec2, to: Vec2): boolean {
+    const d = Math.hypot(to.x - from.x, to.z - from.z);
+    const n = Math.floor(d / 6);
+    for (let i = 1; i < n; i++) {
+      const t = i / n;
+      if (t < 0.12 || t > 0.85) continue;
+      if (!playerCameraProbe({ x: from.x + (to.x - from.x) * t, z: from.z + (to.z - from.z) * t })) return false;
+    }
+    return true;
+  }
   const playerCameraProbe = (p: Vec2): boolean =>
     inCave(p) ? caveStandTest(p, 2)
     : liftActive() && inCabin(p) ? cabinStandTest(p, 2)
     : vestibuleOf(p) !== null ? vestibuleStandTest(vestibuleOf(p)!, p, 2)
-    : onFloor2(p) ? floor2StandTest(p, 2)
+    : onUpperFloor(p) ? upperFloorStand(p, 2)
     // A BODY INDOORS keeps exactly the camera it always had
     : inOfficeDomain(playerMode.body.pos) ? legacyCameraProbe(p)
     : inLabDomain(p) ? aiLabStandTest(p, 2)
@@ -2346,7 +2539,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   }
   function activateInteractable(id: string, kind: "seat" | "lounge" | "approach" | "person" | "ride", near?: Vec2): boolean {
     // A SHARED SCOOTER: mount it (the ride never hands the avatar away — Player View drives it)
-    if (kind === "ride") return mountScooter(id);
+    // (S7: or lift my own fallen one, beside it — "lift:<scooter>")
+    if (kind === "ride") return id.startsWith("lift:") ? liftMine() : mountScooter(id);
     // PHASE 6D — A PERSON. The one activation that starts nothing in this world: it SELECTS, and the host
     // decides what a selection means (app/interactions.ts). The pointer is handed back so the card that
     // opens can actually be used, and false is returned because no interaction took the avatar.
@@ -2370,7 +2564,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // journey, so it is branched in the SAME bridge every other verb goes through rather than given a
     // path of its own. Returning true means PLAYER has released the avatar and something else is driving
     // it, which is exactly what the cinematic needs.
-    if (id === `${GROUND_ELEVATOR.id}/call` || id === `${FLOOR2_ELEVATOR.id}/call`) return callElevator();
+    if (ELEVATOR_CALL_IDS.has(id)) return requestElevator();
     if (id === CHAMPIONSHIP_ENTRANCE_ID) return caveTransition?.enter() ?? false;
     if (id === CAVE_EXIT_ID) return caveTransition?.exit() ?? false;
     if (id === CAVE_SCREEN_ID) { caveMedia.toggle(); return false; }
@@ -2467,7 +2661,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  `seatedTuck` the local sit parks it at, so the peer sits where the local would and the chair reads as
    *  taken; the rest transform is kept and put back on release. Fixed seating is never written to. */
   const peerSeatRest = new Map<string, { pos: THREE.Vector3; quat: THREE.Quaternion }>();
-  function peerSeatAnchor(id: string): SeatAnchorPose | null {
+  function peerSeatAnchor(id: string, humanBase = false): SeatAnchorPose | null {
     const { entityId, slotId } = parseSeatAnchorId(id);
     if (!world.entities.has(entityId) || !mirror.hasView(entityId)) return null;
     const e = world.get(entityId);
@@ -2476,11 +2670,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       const spec = e.capabilities.seat;
       if (!spec) return null;
       if (!peerSeatRest.has(id)) {
-        peerSeatRest.set(id, { pos: view.position.clone(), quat: view.quaternion.clone() });
-        view.position.addScaledVector(new THREE.Vector3(spec.pullDir.x, 0, spec.pullDir.z), spec.seatedTuck);
+        const rest = { pos: view.position.clone(), quat: view.quaternion.clone() };
+        peerSeatRest.set(id, rest);
+        view.position.addScaledVector(new THREE.Vector3(spec.pullDir.x, 0, spec.pullDir.z), seatedTuckFor(spec, humanBase, { view, restPos: rest.pos, restQuat: rest.quat, yaw: seatedYawFor(id, spec.seatedYaw) }));
         R.invalidateShadows(); // a static caster moved
       }
-      return { contact: deskSeatContact(view, spec), yaw: seatedYawFor(id, spec.seatedYaw), kind: "seat" };
+      return { contact: deskSeatContact(view, spec), yaw: seatedYawFor(id, spec.seatedYaw), kind: "seat", workstation: spec.workstation === true };
     }
     const slot = e.capabilities.lounge?.slots.find((s2) => s2.id === slotId);
     if (!slot) return null;
@@ -2502,9 +2697,28 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   /** WHO HOLDS THE CONTROLLER STACK'S GUIDED BASE: a Go Together journey, a Directed Meeting, or both.
    *  Either keeps the body system-driven; the base drops back to Idle only when neither does. */
   const guidedHolds = { travel: false, meeting: false };
+  /** S4 — THE CARS ARE SOLID to this body in Player View, on foot and on a scooter: a step deeper into one is
+   *  refused; a step out of one never is (nobody is ever trapped in a car that drove into them). Assigned once
+   *  the traffic timeline exists (below); every other user of the stand tests (remote bodies, the planner) is
+   *  untouched — a car is not a wall, it is somewhere this body cannot walk into. */
+  let carBlocks: ((p: Vec2, radius: number) => boolean) | null = null;
+  /** the deck's reach for the car test: a little more than a walker's, for the board under the feet */
+  const RIDE_CAR_RADIUS = 12;
+  /** AN INTERACTION MENU IS UP over the world (setInteractionMenuOpen): its Escape closes IT, nothing else */
+  let interactionMenuOpen = false;
   const playerMode = new PlayerMode({
-    avatar, stack, world, canStand: playerStand, cameraProbe: playerCameraProbe,
-    support: playerSupport, dropMax: WALK_PROFILE.dropMax,
+    avatar, stack, world, canStand: (p: Vec2, motion?: TraversalState) => playerStand(p, motion) && !(carBlocks?.(p, NAV_RADIUS) ?? false), cameraProbe: playerCameraProbe,
+    support: playerSupport, dropMax: WALK_PROFILE.dropMax, groundAt: playerGround, headroom: headroomAt,
+    // PARKOUR V3 — the declared routes (world/traversalRoutes): the treehouse's ladders and zipline today
+    routes: LAB_ROUTES,
+    // PARKOUR V2 — the vault and the mantle (player/traversal): the same stand test (cars included) with at most the
+    // one vaulted obstacle excused, the index's vault obstacles, and the office boundary — no confirmed check-in, no
+    // traversal that lands inside the working office (the Reception rail is never a way round the gates)
+    traversal: {
+      stand: (p, ctx, ignore) => playerStand(p, ctx, ignore) && !(carBlocks?.(p, NAV_RADIUS) ?? false),
+      vaultables: (p, r) => standables.vaultables(p, r),
+      mayEnter: (_from, to) => mayPlaceAt(to),
+    },
     // the target marker hangs off the SCENE, not the office group: the CAVE hides the whole office while
     // you are inside it, and a marker parented to that group would vanish with it
     camera: R.playerCamera, canvas, overlayRoot: R.scene,
@@ -2513,7 +2727,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     activate: activateInteractable,
     // PHASE 6D — the coworkers, re-read per frame because they move. Empty until a host subscribes, so
     // the standalone dev page targets exactly what it always did.
-    dynamicCandidates: () => { const s = scooterCandidates(); return s.length ? [...coworkerCandidates(), ...s] : coworkerCandidates(); },
+    dynamicCandidates: () => { const s = [...scooterCandidates(), ...recoveryCandidates()]; return s.length ? [...coworkerCandidates(), ...s] : coworkerCandidates(); },
     // DIRECTED MEETING — the meeting owns the chair; E does not stand the body up (Esc hands it back first).
     canStandUp: () => !guidedHolds.meeting && engagedSeat() !== null,
     standUp: () => engagedSeat()?.stand(),
@@ -2529,7 +2743,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // camera except while the lift or the portal is staging its own shot.
     guided: () => stack.guided,
     targetsSuppressed: () => guidedHolds.meeting,
-    freeLook: () => (stack.guided || stack.owner === "Navigation") && !floorTransition?.busy && !caveTransition?.busy,
+    // INTERACTION V2 — nothing is offered through a wall. Fixtures and seats are already scoped to the room the
+    // body stands in; a PERSON (who belongs to no bucket) must share that space, or be close enough to be
+    // across one doorway from it. The "walk to the marker" hint looks along the floor itself.
+    sight: sameSpace,
+    clearView: lineOfSight,
+    // SEATED TOO: a seat (or a sofa) owns the body from the walk up to the stand-up, but it never stages a shot of its
+    // own, so the mouse keeps the camera the whole time — sitting no longer freezes the view at its last angle.
+    freeLook: () => (stack.guided || stack.owner === "Navigation" || seatEngaged()) && !floorTransition?.busy && !caveTransition?.busy,
     onManualOverride: (owner) => {
       if (floorTransition?.busy) return; // the ride itself is not interruptible (see FloorTransition)
       // A GUIDED JOURNEY IS NOT FOUGHT BY THE KEYS: they are ignored until Esc hands the body back.
@@ -2539,12 +2760,52 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       partyHooks?.onUserMove();
     },
   });
+  playerViewActive = () => playerMode.active;
   // THE LOCAL TAKEOFF, STRAIGHT OUT TO THE OTHER BROWSERS. Not through SelfMovementFeed: that funnel
   // turns continuous motion into V1 movements, and a jump is neither continuous nor a movement — it
   // would have to be smuggled into a leg that may not exist (a standing jump publishes nothing at all)
   // or into one that started 300 ms ago. One call, one relay, no state. The standalone dev page's sink
   // is absent and one there stays local, exactly as everything else does.
-  playerMode.onJumped = () => selfMovement?.jumped?.();
+  // PARKOUR V3 — A ROUTE IS RELAYED AS WHAT IT IS: the route's id, the way it is taken, how far along it started — every
+  // peer replays the same declared line and pace from the server's clock (world/Coworkers.ride), and a late joiner gets
+  // it from the snapshot part-way through. The movement feed keeps publishing the body's real position meanwhile.
+  const zipRoute = LAB_ROUTES.find((r) => r.kind === "zipline")!;
+  const zipParked = { hold: ziplineHold(zipRoute, "a", 0)!, hang: zipRoute.grip ?? 55, grip: avatar.gripProfile() };
+  const trolleys: ZiplineTrolley[] = [];
+  function placeZiplineTrolleys(): void {
+    const mine = playerMode.ziplineHoldNow;
+    const holds = [...(mine ? [{ hold: mine, hang: zipRoute.grip ?? 55, grip: avatar.gripProfile() }] : []), ...coworkers.ziplineHolds()];
+    // nobody riding: the trolley waits at the top, its grips sized for this employee (the next rider, most likely)
+    if (holds.length === 0) holds.push({ ...zipParked, grip: avatar.gripProfile() });
+    while (trolleys.length < holds.length) { const t = new ZiplineTrolley(); R.scene.add(t.group); trolleys.push(t); }
+    trolleys.forEach((t, i) => {
+      const h = holds[i];
+      t.group.visible = h !== undefined;
+      if (h) t.place(h.hold.cable, h.hold.yaw, h.hold.pitch, h.hang, h.grip);
+    });
+  }
+  playerMode.onRouteEvent = (ev) => {
+    if (ev.type === "start") selfMovement?.routed?.({ kind: "route", route: ev.route.id, dir: ev.dir, p0: Math.round(ev.p0 * 1000) / 1000, ms: ev.ms });
+    else selfMovement?.routed?.({ kind: "halt", route: ev.route.id, end: ev.end });
+  };
+  playerMode.onJumped = (kind, roll, traverse) => {
+    // PARKOUR V2 — A VAULT OR A MANTLE MOVES THE BODY TOO: its line goes out as an ordinary walk of its own duration
+    // (late joiners and the snapshot get the end position from it), the height it ends at first — so the walk says
+    // the feet stand on the top it climbs to, which peers honour only where that top really is — then the action,
+    // with the heights its curves need. Every peer replays the same line and curves (world/Coworkers).
+    if (traverse) {
+      const endsOnTop = traverse.endFeet > avatar.groundAt(traverse.to) + 0.5;
+      selfMovement?.noteFeet?.(endsOnTop ? traverse.endFeet : undefined);
+      selfFeed?.planned(traverse.from, [traverse.to], traverse.ms, "linear");
+      selfMovement?.jumped?.(kind, traverse.ms, { rise: traverse.endFeet - traverse.startFeet, apex: traverse.apex - traverse.startFeet });
+      return;
+    }
+    // PARKOUR V1 — A ROLL MOVES THE BODY: its planned travel is published as an ordinary walk (decel pacing, the
+    // roll's own duration) so every peer moves them along the same path while playing the same roll — a relayed
+    // animation alone would leave peers seeing them slide or snap. Then the action itself, with its duration.
+    if (kind === "roll" && roll) selfFeed?.planned(roll.from, [roll.to], roll.ms, "decel");
+    selfMovement?.jumped?.(kind, roll?.ms);
+  };
 
   // ---- SHARED E-SCOOTERS (single-player; whole-world free roam, Phase 4) ------------------------------
   // Stations are world/scooters' data; the handling is player/ScooterMotion; PlayerMode owns the riding
@@ -2606,27 +2867,430 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   /** the dock whose scooter is being ridden, or null */
   let ridingDock: ScooterDock | null = null;
   const scooterState = { riding: "—", last: "—", mounts: 0 };
-  /** "Ride" is offered to somebody on foot, in Player View, on the ground floor, beside a dock they can set off from */
+  // ---- S2: RIDERS EVERYBODY SEES (app/riderStream) -------------------------------------------------------
+  /** this ride is being streamed (mounted with the server in the loop): the feed is quiet, poses go out */
+  let rideStreamed = false;
+  /** the newest frame of this body's ride (the ride's own place hook writes it) */
+  let ridePoseNow: RiderPose | null = null;
+  const ridePoseOut = new RiderPoseOut();
+  function sendRidePose(force = false): void {
+    if (!rideStreamed || !ridingDock || !ridePoseNow) return;
+    const sample = ridePoseOut.next(Date.now(), ridingDock.id, ridePoseNow, force);
+    if (sample) scooterGate.sendPose(sample);
+  }
+  /** S3 — SKIDS AND SPARKS for every rider drawn here, ours and everybody else's (build/driftFx: two draws) */
+  const driftFx = new DriftFx();
+  R.scene.add(driftFx.group);
+  /** the frame's dt (s), for the effects fed from inside the ride's own step */
+  let lastFrameDt = 0;
+  /** the rear wheel's ground point under a deck drawn at `h` (models face local −z; the rear wheel is +z) */
+  const rearWheel = (o: Vec2, h: number): Vec2 => ({ x: o.x - Math.sin(h) * SCOOTER_GEOMETRY.rearZ, z: o.z + Math.cos(h) * SCOOTER_GEOMETRY.rearZ });
+  /** EVERYBODY ELSE'S RIDES (app/riderStream RemoteRiderDriver): the scooter under each, their body on it —
+   *  drawn at the DECK's heading (travel + a drift's slip), with that drift's skids and sparks */
+  const remoteRiders = new RemoteRiderDriver({
+    registry: (id) => scooterGate.registry.get(id),
+    visible: () => currentFloor === GROUND_FLOOR_ID,
+    driveBody: (email, pose) => coworkers.setScooterRide(email, pose ? { x: pose.x, z: pose.z, y: pose.y + DECK_TOP, yaw: Math.PI - drawnHeading(pose), lean: pose.lean, pitch: pose.pitch } : null),
+    placeScooter: (id, pose) => {
+      const h = drawnHeading(pose);
+      const o = riddenScooterOrigin(pose, h);
+      scenery.scooters?.placeRemote(id, o.x, o.z, -h, pose.lean, pose.y, pose.pitch);
+      driftFx.feed(id, rearWheel(o, h), pose.y, pose.heading, pose.speed, pose.fx, lastFrameDt);
+    },
+    hideScooter: (id) => scenery.scooters?.hideRemote(id),
+  });
+  /** the server's word on the scooters: a scooter whose ride CHANGED starts its stream again */
+  function applyScooterStatesWithRiders(list: readonly Vo3dScooterState[], full: boolean): void {
+    for (const s of list) {
+      const prev = scooterGate.registry.get(s.id);
+      if (!prev || prev.state !== s.state || prev.mine !== s.mine) remoteRiders.rideChanged(s.id);
+    }
+    scooterGate.apply(list, full);
+  }
+
+  // ---- S4: TRAFFIC THAT STOPS (world/trafficHolds, world/trafficObstacles) -------------------------------
+  /** THE CARS, as everybody draws them: the deterministic loops, the server's holds, and the queue behind */
+  const trafficTimeline = new TrafficTimeline(TRAFFIC_LOOPS.map(buildLoopPath));
+  scenery.setTrafficPoser((li, vi, t, out) => trafficTimeline.pose(li, vi, t, out));
+  /** this employee, in a car's way or not — told to the server (host: app/useScooterAuthority) */
+  const obstacleReporter = new ObstacleReporter();
+  let trafficReport: ((r: ObstacleReport) => void) | null = null;
+  let obstacleAccMs = 0;
+  let obstacleLast: { x: number; z: number; at: number } | null = null;
+  /** THIS body as an obstacle: only on the campus ground (never upstairs, in the lift, the Cave, the office or
+   *  the Lab), with its velocity — a rider's from the deck, a walker's from how far it moved */
+  function selfObstacleBody(nowMs: number): { x: number; z: number; vx: number; vz: number; kind: "walk" | "ride" } | null {
+    const pos = playerMode.active ? { ...playerMode.body.pos } : { x: avatar.position.x, z: avatar.position.z };
+    const outside = currentFloor === GROUND_FLOOR_ID && !liftActive() && caveTransition?.state.where !== "cave" && !inOfficeDomain(pos) && !inLabDomain(pos);
+    trafficDebug.why = { pos, floor: currentFloor, lift: liftActive(), cave: caveTransition?.state.where ?? null, office: inOfficeDomain(pos), lab: inLabDomain(pos) };
+    const last = obstacleLast;
+    obstacleLast = { ...pos, at: nowMs };
+    if (!outside) return null;
+    const ride = ridingDock ? playerMode.rideState : null;
+    if (ride) return { ...pos, vx: Math.sin(ride.heading) * ride.speed, vz: -Math.cos(ride.heading) * ride.speed, kind: "ride" };
+    const dt = last ? (nowMs - last.at) / 1000 : 0;
+    return dt > 0 && dt < 1 ? { ...pos, vx: (pos.x - last!.x) / dt, vz: (pos.z - last!.z) / dt, kind: "walk" } : { ...pos, vx: 0, vz: 0, kind: "walk" };
+  }
+  /** ten times a second: is this employee in a car's way? (the same cars as drawn: env.lastTrafficTime) */
+  /** RUNTIME READOUT for the whole chain (__vo3d.traffic): reporter → server → holds → drawn cars */
+  const trafficDebug = { reporter: false, t: Number.NaN, body: null as unknown, why: null as unknown, sent: 0, last: null as ObstacleReport | null, applied: 0, held: [] as string[] };
+  function updateTrafficObstacles(dtMs: number): void {
+    obstacleAccMs += dtMs;
+    if (obstacleAccMs < 100) return;
+    obstacleAccMs = 0;
+    trafficDebug.reporter = trafficReport !== null;
+    trafficDebug.t = env.lastTrafficTime;
+    if (!trafficReport || !Number.isFinite(env.lastTrafficTime)) return;
+    const now = Date.now();
+    const body = selfObstacleBody(now);
+    trafficDebug.body = body;
+    for (const r of obstacleReporter.update(now, trafficTimeline, env.lastTrafficTime, body)) { trafficReport(r); trafficDebug.sent++; trafficDebug.last = r; }
+  }
+  // ---- S5: did this rider just crash into a car? (world/scooterCrash; the server confirms) ------------------
+  let crashPrev: (ScooterAt & { t: number }) | null = null;
+  let crashPending = false;
+  const crashState = { reports: 0, last: "—" as string };
+  /** ONE FRAME of the ride, swept against the cars from last frame: a genuine accident is reported once — the
+   *  deck stops while the server decides — and a confirmed one comes back as the scooter FALLING (app/scooterGate
+   *  then gets the rider off, as for any scooter the server takes back). A bump or a car that braked: nothing. */
+  function updateCrash(): void {
+    const t = env.lastTrafficTime;
+    if (!rideStreamed || !ridingDock || !ridePoseNow || !Number.isFinite(t) || currentFloor !== GROUND_FLOOR_ID) { crashPrev = null; return; }
+    const cur = { x: ridePoseNow.x, z: ridePoseNow.z, heading: ridePoseNow.heading, speed: ridePoseNow.speed, t };
+    const prev = crashPrev ?? cur;
+    crashPrev = cur;
+    if (crashPending) return;
+    const hit = sweepContact(trafficTimeline, prev, cur);
+    if (!hit || hit.kind !== "accident") return;
+    const ask = scooterGate.reportAccident({ scooterId: ridingDock.id, loop: trafficTimeline.loops[hit.li].loop.id, vehicle: hit.vehicle, x: hit.x, z: hit.z, heading: cur.heading, speed: Math.max(prev.speed, cur.speed), t: hit.t, closing: hit.closing });
+    if (!ask) return;
+    crashPending = true;
+    crashState.reports++;
+    playerMode.haltRide();
+    void ask.then((r) => { crashPending = false; crashState.last = r.ok ? "confirmed" : `refused: ${r.reason ?? "?"}`; });
+  }
+  // ---- S6: THE ACCIDENT, PLAYED (world/accidentMotion — the same crash in every browser, off the server's clock) --
+  /** every accident in progress, as the server has them */
+  let scooterAccidents: readonly Vo3dAccident[] = [];
+  /** each accident's plan, made ONCE per browser (so nothing is ever corrected mid-crash) */
+  const accidentPlans = new Map<string, AccidentPlan>();
+  /** WHERE THE THROWS MAY GO: the campus as anybody may stand on it (never into the office or the Lab, never
+   *  off the ground model's world) and clear of the car that was hit — a body may start touching it (it was hit)
+   *  but no point of the throw may go deeper into it, along where it is stopping */
+  function throwClear(a: Vo3dAccident): ClearTest {
+    const li = trafficTimeline.loops.findIndex((l) => l.loop.id === a.loop);
+    let box: { x: number; z: number; c: number; s: number; hl: number; hw: number } | null = null;
+    if (li >= 0 && a.vehicle !== undefined && Number.isFinite(a.at)) {
+      const o: TrafficPose = { x: 0, z: 0, yaw: 0, heading: 0, speed: 0 };
+      trafficTimeline.pose(li, a.vehicle, a.at, o);
+      const stop = Math.max(0, a.carSpeed) * 1.1, c = Math.cos(o.heading), sn = Math.sin(o.heading);
+      box = { x: o.x + c * stop / 2, z: o.z + sn * stop / 2, c, s: sn, hl: trafficTimeline.carLength(li, a.vehicle) / 2 + stop / 2, hw: (VEHICLE_WIDTH[trafficTimeline.loops[li].loop.vehicles[a.vehicle]?.kind ?? ""] ?? 60) / 2 };
+    }
+    const inside = (x: number, z: number, r: number): number => {
+      if (!box) return 0;
+      const dx = x - box.x, dz = z - box.z;
+      const along = Math.abs(dx * box.c + dz * box.s) - box.hl, side = Math.abs(-dx * box.s + dz * box.c) - box.hw;
+      return r - (along > 0 || side > 0 ? Math.hypot(Math.max(along, 0), Math.max(side, 0)) : Math.max(along, side));
+    };
+    return (x, z, r) => ground.canOccupy({ x, z }, r, WALK_PROFILE, rideForeign) && inside(x, z, r) <= Math.max(0, inside(a.x, a.z, r)) + 0.5;
+  }
+  function planOf(a: Vo3dAccident): AccidentPlan {
+    let p = accidentPlans.get(a.id);
+    if (!p) { p = accidentPlan(a, a.reach ?? chooseReach(a, throwClear(a))); accidentPlans.set(a.id, p); }
+    return p;
+  }
+  /** WHEN EACH CRASH STARTED HERE. A crash is seen the moment the server confirms it, a round trip after the hit:
+   *  it plays from the very contact and catches up with the shared clock over CATCH_UP seconds (no jump, no
+   *  replay); somebody arriving later than LATE goes straight to the moment everybody else is at. */
+  const CATCH_UP = 0.5, LATE = 0.6;
+  const accidentSeen = new Map<string, { lag: number; start: number }>();
+  function crashTime(a: Vo3dAccident, t: number): number { return catchUp(a.id, t - a.at, t); }
+  /** (S7: the lift is seen the same way, a round trip after the rider's E) */
+  function catchUp(key: string, since: number, t: number): number {
+    let c = accidentSeen.get(key);
+    if (!c) { c = { lag: Math.max(0, since), start: t }; accidentSeen.set(key, c); }
+    const e = t - c.start;
+    if (c.lag > LATE || e >= CATCH_UP) return since;
+    const u = Math.max(0, e / CATCH_UP);
+    return e + c.lag * u * u * (3 - 2 * u);
+  }
+  /** one crash frame, placed on the ground under the hips, for avatar/crashPose */
+  const bodyFrames = new Map<string, { rider: RiderCrashFrame | undefined; body: CrashBodyFrame }>();
+  function crashFrame(a: Vo3dAccident, plan: AccidentPlan, t: number): { rider: RiderCrashFrame; body: CrashBodyFrame; ground: number } {
+    let slot = bodyFrames.get(a.id);
+    if (!slot) { slot = { rider: undefined, body: { hip: { x: 0, y: 0, z: 0 }, q: new THREE.Quaternion(), ground: 0, contact: 0, anchor: 0, weight: 1, limbs: [] } }; bodyFrames.set(a.id, slot); }
+    const fr = slot.rider = riderFrameAt(a, plan, t, slot.rider);
+    const g = groundYAt(fr);
+    const b = slot.body;
+    b.hip = { x: fr.x, y: g + fr.y, z: fr.z };
+    b.q = fr.q; b.ground = g; b.contact = fr.contact; b.anchor = fr.anchor; b.weight = fr.weight; b.limbs = fr.limbs;
+    return { rider: fr, body: b, ground: g };
+  }
+  /** THIS employee's own fall, while it plays: their body is the timeline's, not the keyboard's */
+  let localFall: { accident: Vo3dAccident; plan: AccidentPlan; kicks: number } | null = null;
+  /** other riders whose bodies the accident timeline is driving */
+  const remoteFalling = new Set<string>();
+  const accidentState = { recovery: "—" as string, playing: 0, local: "—" as string, severity: 0, kind: "—" as string, riderTravel: 0, scooterTravel: 0, end: 0, lowest: 0 };
+  /** FALLEN SCOOTERS for everybody: thrown, tumbling and sliding along their accident's timeline, then lying
+   *  still; one with no accident known (a stale snapshot) lies where the server says */
+  let fallenShown = new Set<string>();
+  function renderFallen(): void {
+    const now = new Set<string>();
+    const t = env.lastTrafficTime;
+    if (currentFloor === GROUND_FLOOR_ID) for (const s of scooterGate.registry.values()) {
+      if (s.state !== "fallen" || !s.at) continue;
+      now.add(s.id);
+      const a = scooterAccidents.find((x) => x.scooterId === s.id && x.id === s.accident);
+      const lp = a ? liftPlanOf(a) : null;
+      if (a && lp && Number.isFinite(t)) {
+        // S7 — being lifted, then standing where it was recovered
+        const sp = liftScooterAt(lp, liftTime(a, t));
+        scenery.scooters?.placeRemote(s.id, sp.x, sp.z, sp.yaw, sp.lean, groundYAt(sp) + sp.y, sp.pitch);
+      } else if (a && Number.isFinite(t)) {
+        const sp = scooterPoseAt(a, planOf(a), crashTime(a, t));
+        scenery.scooters?.placeRemote(s.id, sp.x, sp.z, sp.yaw, sp.lean, groundYAt({ x: sp.comX, z: sp.comZ }) + sp.y, sp.pitch);
+      } else scenery.scooters?.placeRemote(s.id, s.at.x, s.at.z, -s.at.yaw, Math.PI / 2, groundYAt(s.at) + 3, 0);
+    }
+    for (const id of fallenShown) if (!now.has(id)) scenery.scooters?.hideRemote(id);
+    fallenShown = now;
+    // forget the crashes that are over
+    for (const id of accidentPlans.keys()) if (!scooterAccidents.some((a) => a.id === id) && localFall?.accident.id !== id) { accidentPlans.delete(id); accidentSeen.delete(id); bodyFrames.delete(id); liftPlans.delete(id); accidentSeen.delete(`lift:${id}`); bodyFrames.delete(`lift:${id}`); }
+  }
+  /** EVERY OTHER RIDER'S CRASH: their real body is thrown, tumbles, skids, lies and gets up along the same
+   *  timeline; then it is theirs again (their own movement feed says where they stood up) */
+  function updateRemoteFalls(t: number): void {
+    const active = new Set<string>();
+    if (Number.isFinite(t) && currentFloor === GROUND_FLOOR_ID) for (const a of scooterAccidents) {
+      if (localFall?.accident.id === a.id) continue;
+      const plan = planOf(a), lp = liftPlanOf(a);
+      if (lp) {
+        // S7 — their lift, on their own body
+        const lt = liftTime(a, t);
+        if (lt >= LIFT.TOTAL) continue;
+        const { rider, body, ground: g } = liftFrame(a, lp, lt);
+        if (coworkers.setScooterRide(a.rider, { x: rider.x, z: rider.z, y: g, yaw: lp.riderYaw, lean: 0, pitch: 0, crash: body, rider: false })) active.add(a.rider);
+        continue;
+      }
+      const since = crashTime(a, t);
+      if (since < 0 || since >= plan.rider.end) continue;
+      const { rider, body, ground: g } = crashFrame(a, plan, since);
+      if (coworkers.setScooterRide(a.rider, { x: rider.x, z: rider.z, y: g, yaw: plan.rider.psi0, lean: 0, pitch: 0, crash: body, rider: false })) active.add(a.rider);
+    }
+    for (const email of remoteFalling) if (!active.has(email)) coworkers.setScooterRide(email, null);
+    remoteFalling.clear();
+    for (const e of active) remoteFalling.add(e);
+    accidentState.playing = active.size + (localFall ? 1 : 0);
+  }
+  /** S6 — THIS RIDER'S OWN CRASH begins: the timeline takes the body (no keyboard, no ride, no drift), and the
+   *  server is told how far this world lets it go (the scooter's resting place follows, for everybody) */
+  function beginLocalFall(a: Vo3dAccident): void {
+    const reach: AccidentReach = a.reach ?? chooseReach(a, throwClear(a));
+    if (!accidentPlans.has(a.id)) accidentPlans.set(a.id, accidentPlan(a, reach));
+    if (!a.reach) scooterGate.reportAccidentReach(a.id, reach);
+    const plan = planOf(a);
+    localFall = { accident: a, plan, kicks: 0 };
+    stack.acquire("Interaction");
+    Object.assign(accidentState, { local: `crashing (${a.id})`, severity: +plan.severity.toFixed(2), kind: plan.kind, riderTravel: Math.round(plan.rider.travel), scooterTravel: Math.round(plan.scooter.travel), end: +plan.rider.end.toFixed(2) });
+  }
+  /** …and ends: on their feet where they got up, the body PLAYER's again, the feed told where they stand */
+  function endLocalFall(why: string, at?: Vec2): void {
+    const f = localFall;
+    if (!f) return;
+    localFall = null;
+    avatar.setCrash(null);
+    playerMode.body.placeNear(at ?? { x: f.plan.rider.standX, z: f.plan.rider.standZ });
+    avatar.setYaw(f.plan.rider.standYaw);
+    avatar.setPosition(playerMode.body.pos);
+    stack.release("Interaction");
+    selfFeed?.dismountedScooter({ ...playerMode.body.pos }, avatar.yaw);
+    accidentState.local = `up (${why})`;
+    // S7 — back on their feet: the scooter is theirs to lift and ride again
+    if (why === "done") myAccident = f.accident.id;
+  }
+  function updateLocalFall(t: number): void {
+    const f = localFall;
+    if (!f) return;
+    // the accident went away early (the rider's own reconnect, a cleanup), we left the ground floor, or it is over
+    const live = scooterAccidents.some((a) => a.id === f.accident.id);
+    const since = Number.isFinite(t) ? crashTime(f.accident, t) : f.plan.rider.end;
+    if (!live || currentFloor !== GROUND_FLOOR_ID || since >= f.plan.rider.end) {
+      endLocalFall(!live ? "ended" : "done", since >= f.plan.rider.end ? undefined : { ...playerMode.body.pos });
+      return;
+    }
+    const { rider, body, ground: g } = crashFrame(f.accident, f.plan, Math.max(0, since));
+    const pos = { x: rider.x, z: rider.z };
+    playerMode.body.pos = pos;
+    avatar.setPosition(pos, g);
+    avatar.setYaw(f.plan.rider.psi0);
+    avatar.setCrash(body);
+    accidentState.lowest = +(avatar.crashStats.lowest - g).toFixed(2);
+    // the camera feels each touchdown, a little — the first harder than the bounce
+    const s = f.plan.severity, r = f.plan.rider;
+    if (f.kicks === 0 && since >= r.tLand) { f.kicks = 1; playerMode.camera.kick(0.5 + 0.9 * s); }
+    if (f.kicks === 1 && r.T2 > 0 && since >= r.tBounce) { f.kicks = 2; playerMode.camera.kick(0.3 + 0.4 * s); }
+  }
+  // ---- S7: GETTING IT BACK UP (world/liftMotion — the same lift in every browser, off the server's liftAt) ------
+  /** this employee's own accident, once its crash has played: theirs to lift, then ride, from where it lies */
+  let myAccident: string | null = null;
+  const liftPlans = new Map<string, LiftPlan>();
+  function liftPlanOf(a: Vo3dAccident): LiftPlan | null {
+    if (a.liftAt == null || !a.liftFrom) return null;
+    let p = liftPlans.get(a.id);
+    if (!p) { p = liftPlan(a, planOf(a), a.liftFrom); liftPlans.set(a.id, p); }
+    return p;
+  }
+  const liftTime = (a: Vo3dAccident, t: number): number => catchUp(`lift:${a.id}`, t - (a.liftAt ?? t), t);
+  /** CRASHING → FALLEN → LIFTING → UPRIGHT, on everybody's clock (the server keeps the same: scooter_accidents.phase) */
+  function recoveryPhase(a: Vo3dAccident, t: number): "crashing" | "fallen" | "lifting" | "upright" {
+    if (a.liftAt != null) return t - a.liftAt < LIFT.UPRIGHT ? "lifting" : "upright";
+    return t - a.at < planOf(a).end ? "crashing" : "fallen";
+  }
+  function liftFrame(a: Vo3dAccident, lp: LiftPlan, lt: number): { rider: RiderLiftFrame; body: CrashBodyFrame; ground: number } {
+    const key = `lift:${a.id}`;
+    let slot = bodyFrames.get(key);
+    if (!slot) { slot = { rider: undefined, body: { hip: { x: 0, y: 0, z: 0 }, q: new THREE.Quaternion(), ground: 0, contact: 1, anchor: 0, weight: 1, limbs: [] } }; bodyFrames.set(key, slot); }
+    const fr = liftFrames.get(key) ?? riderLiftAt(lp, lt);
+    riderLiftAt(lp, lt, fr);
+    liftFrames.set(key, fr);
+    const g = groundYAt(fr), b = slot.body;
+    b.hip = { x: fr.x, y: g + fr.y, z: fr.z };
+    b.q = fr.q; b.ground = g; b.contact = fr.contact; b.anchor = fr.anchor; b.weight = fr.weight; b.limbs = fr.limbs; b.footLevel = fr.footLevel;
+    return { rider: fr, body: b, ground: g };
+  }
+  const liftFrames = new Map<string, RiderLiftFrame>();
+  const mine = (): Vo3dAccident | undefined => (myAccident ? scooterAccidents.find((a) => a.id === myAccident) : undefined);
+  /** where my scooter is now: lying (its centre), or standing (where it was lifted) */
+  function myScooterAt(a: Vo3dAccident): Vec2 {
+    const lp = liftPlanOf(a);
+    if (lp) return { x: lp.restX, z: lp.restZ };
+    const rest = scooterPoseAt(a, planOf(a), planOf(a).scooter.end + 60);
+    return { x: rest.comX, z: rest.comZ };
+  }
+  const canRecover = (): boolean =>
+    playerMode.active && !ridingDock && !localFall && !localLift && currentFloor === GROUND_FLOOR_ID && engagedSeat() === null && !stack.guided && Number.isFinite(env.lastTrafficTime);
+  const nearMine = (a: Vo3dAccident): boolean => { const p = myScooterAt(a); return Math.hypot(p.x - playerMode.body.pos.x, p.z - playerMode.body.pos.z) < LIFT.RANGE; };
+  /** [E] LIFT SCOOTER beside it lying, once they are up; [E] RIDE SCOOTER beside it standing, once it is up */
+  function recoveryCandidates(): Candidate[] {
+    const a = mine();
+    if (!a || !canRecover() || !nearMine(a)) return [];
+    const ph = recoveryPhase(a, env.lastTrafficTime), pos = myScooterAt(a);
+    if (ph === "fallen" && scooterGate.liftPending === null) return [{ id: `lift:${a.scooterId}`, kind: "ride" as const, pos, label: "Lift scooter", roomId: "exterior" }];
+    if (ph === "upright" && liftTime(a, env.lastTrafficTime) >= LIFT.TOTAL && scooterGate.pending === null) return [{ id: a.scooterId, kind: "ride" as const, pos, label: "Ride scooter", roomId: "exterior" }];
+    return [];
+  }
+  /** E: ask the server to start the lift (the body waits for its word — then everybody sees it at once) */
+  function liftMine(): boolean {
+    const a = mine();
+    if (!a || !canRecover() || !nearMine(a) || recoveryPhase(a, env.lastTrafficTime) !== "fallen") return false;
+    const ask = scooterGate.lift(a.id, { ...playerMode.body.pos });
+    if (ask) void ask.then((r) => { accidentState.recovery = r.ok ? "lifting" : `lift refused: ${r.reason ?? "?"}`; });
+    return false;
+  }
+  /** the scooter I lifted, standing, with me beside it: where I stand (the ride is asked for from here) */
+  function recoverAt(id: string): Vec2 | null {
+    const a = mine();
+    if (!a || a.scooterId !== id || !canRecover() || recoveryPhase(a, env.lastTrafficTime) !== "upright" || !nearMine(a)) return null;
+    return { ...playerMode.body.pos };
+  }
+  /** THIS RIDER'S OWN LIFT: the body is the lift's (no keyboard) from the server's word until it is done */
+  let localLift: { accident: Vo3dAccident; plan: LiftPlan } | null = null;
+  function updateLocalLift(t: number): void {
+    const a = mine();
+    if (myAccident && !a && !localFall) { myAccident = null; accidentState.recovery = "—"; }
+    if (!localLift && a && !localFall && !ridingDock && Number.isFinite(t)) {
+      const lp = liftPlanOf(a);
+      if (lp && liftTime(a, t) < LIFT.TOTAL) { localLift = { accident: a, plan: lp }; stack.acquire("Interaction"); accidentState.recovery = "lifting"; }
+    }
+    const f = localLift;
+    if (!f) return;
+    const live = scooterAccidents.some((x) => x.id === f.accident.id);
+    const lt = Number.isFinite(t) && live ? liftTime(f.accident, t) : LIFT.TOTAL;
+    if (!live || currentFloor !== GROUND_FLOOR_ID || lt >= LIFT.TOTAL) {
+      localLift = null;
+      avatar.setCrash(null);
+      playerMode.body.placeNear(lt >= LIFT.TOTAL ? { x: f.plan.spotX, z: f.plan.spotZ } : { ...playerMode.body.pos });
+      avatar.setYaw(f.plan.riderYaw);
+      avatar.setPosition(playerMode.body.pos);
+      stack.release("Interaction");
+      accidentState.recovery = live ? "upright — ride it" : "ended";
+      return;
+    }
+    const { rider, body, ground: g } = liftFrame(f.accident, f.plan, lt);
+    const pos = { x: rider.x, z: rider.z };
+    playerMode.body.pos = pos;
+    avatar.setPosition(pos, g);
+    avatar.setYaw(f.plan.riderYaw);
+    avatar.setCrash(body);
+  }
+  /** where the recovered scooter puts a rider who rides it: on its deck, facing the way it stands */
+  function recoveredMount(id: string): { at: Vec2; heading: number } | null {
+    const a = mine();
+    const lp = a && a.scooterId === id ? liftPlanOf(a) : null;
+    if (!lp) return null;
+    const h = lp.heading, f = SCOOTER_GEOMETRY.footZ;
+    return { at: { x: lp.restX - f * Math.sin(h), z: lp.restZ + f * Math.cos(h) }, heading: h };
+  }
+
+  function applyTrafficHolds(list: readonly { loop: string; vehicle: number; d0: number; t0: number; hold: VehicleTimeline["hold"] }[]): void {
+    trafficTimeline.setState(new Map(list.map((v) => [vehicleKey(v.loop, v.vehicle), { d0: v.d0, t0: v.t0, hold: v.hold }])));
+    trafficDebug.applied++;
+    trafficDebug.held = list.filter((v) => v.hold && v.hold.releaseAt === null).map((v) => vehicleKey(v.loop, v.vehicle));
+  }
+
+  // ---- S1: WHO HAS WHICH SCOOTER — the server decides (app/scooterGate, world/scooters) ------------------
+  /** could THIS body set off on dock `d` right now — on foot, in Player View, on the ground floor, beside it */
+  const canMountDock = (d: ScooterDock): boolean =>
+    playerMode.active && !ridingDock && currentFloor === GROUND_FLOOR_ID && engagedSeat() === null && !stack.guided
+    && Math.hypot(d.mount.x - playerMode.body.pos.x, d.mount.z - playerMode.body.pos.z) < 60 && mountHeadingFor(d) !== null;
+  /** EACH RACK SHOWS WHAT IS REALLY IN IT: the one I am riding is out, and so is any the server says is out */
+  function renderScooterDocks(): void {
+    for (const d of ALL_DOCKS) scenery.scooters?.setDocked(d.id, scooterGate.inRack(d.id));
+  }
+  /** the host's line to the server's registry (app/useScooterAuthority); without one — the standalone dev
+   *  page, tests — riding stays the single-player ride it always was */
+  const scooterGate = new ScooterGate({
+    ridingId: () => ridingDock?.id ?? null,
+    canMount: (id) => { const d = ALL_DOCKS.find((x) => x.id === id); return d !== undefined && canMountDock(d); },
+    mountNow: (id) => mountScooterNow(id),
+    dismountTaken: () => dismountScooter("taken"),
+    render: () => renderScooterDocks(),
+    recoverAt: (id) => recoverAt(id),
+  });
+  /** "Ride" is offered beside a dock they can set off from, for a scooter that is actually there to take */
   function scooterCandidates(): Candidate[] {
-    if (!playerMode.active || ridingDock || currentFloor !== GROUND_FLOOR_ID || engagedSeat() !== null || stack.guided) return [];
-    return ALL_DOCKS.filter((d) => Math.hypot(d.mount.x - playerMode.body.pos.x, d.mount.z - playerMode.body.pos.z) < 60 && mountHeadingFor(d) !== null)
+    if (scooterGate.pending !== null) return [];
+    return ALL_DOCKS.filter((d) => canMountDock(d) && scooterGate.available(d.id))
       .map((d) => ({ id: d.id, kind: "ride" as const, pos: d.mount, label: "Ride scooter", roomId: "exterior" }));
   }
-  function mountScooter(id: string): boolean {
+  /** E ON A DOCK — asked of the server first, when there is one (app/scooterGate request) */
+  const mountScooter = (id: string): boolean => scooterGate.request(id);
+  function mountScooterNow(id: string): boolean {
     const dock = ALL_DOCKS.find((d) => d.id === id);
     if (!dock || ridingDock || !scenery.scooters) return false;
-    const heading = mountHeadingFor(dock);
+    // S7 — the scooter I lifted rides from where it stands, the way it faces (never from its rack)
+    const recovered = recoveredMount(id);
+    if (recovered) playerMode.body.placeNear(recovered.at);
+    const heading = recovered ? recovered.heading : mountHeadingFor(dock);
     if (heading === null) return false;
     rideIgnore = `scooter:${dock.id}`;
     const ok = playerMode.startRide({
-      canStand: rideStand,
+      canStand: (p: Vec2, motion?: TraversalState) => rideStand(p, motion) && !(carBlocks?.(p, RIDE_CAR_RADIUS) ?? false),
       deckTop: DECK_TOP,
       ground: scooterGround,
       support: (p) => ground.support(p, RIDE_PROFILE.footRadius),
       dropMax: RIDE_PROFILE.dropMax,
       // the scooter model's yaw is the negated ride heading (models face local −z); it goes where its footZ
       // stands under the rider's feet (world/scooters SCOOTER_GEOMETRY), on the ground, pitched and leaned
-      place: (p, h, lean, _speed, y, pitch) => { const o = riddenScooterOrigin(p, h); scenery.scooters!.placeRidden(o.x, o.z, -h, lean, y, pitch); },
+      place: (p, h, lean, speed, y, pitch, fx) => {
+        const o = riddenScooterOrigin(p, h);
+        scenery.scooters!.placeRidden(o.x, o.z, -h, lean, y, pitch);
+        // S2 — this frame of the ride, as everybody else will draw it (sent at POSE_INTERVAL_MS). S3: the
+        // TRAVEL heading goes out (the deck as drawn is h = travel + slip), with the drift when there is one
+        const slip = fx?.slip ?? 0;
+        const drifting = fx !== undefined && (fx.drift !== 0 || fx.slip !== 0 || fx.boost);
+        ridePoseNow = { x: p.x, z: p.z, y: y ?? 0, heading: h - slip, speed, lean, pitch: pitch ?? 0, ...(drifting ? { fx: { ...fx } } : {}) };
+        driftFx.feed("self", rearWheel(o, h), y ?? 0, h - slip, speed, drifting ? fx : undefined, lastFrameDt);
+      },
       forceEnd: (reason) => dismountScooter(reason),
     }, heading);
     if (!ok) { rideIgnore = undefined; return false; }
@@ -2637,6 +3301,15 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     scenery.scooters.placeRidden(o.x, o.z, -heading, 0, g.y, g.pitch);
     scooterState.riding = dock.id;
     scooterState.mounts++;
+    // S2 — A STREAMED RIDE when the server is in the loop: the movement feed goes quiet (the pose stream is
+    // now the only account of where this body is) and the first pose goes out at once
+    rideStreamed = scooterGate.online;
+    if (rideStreamed) {
+      ridePoseNow = { x: playerMode.body.pos.x, z: playerMode.body.pos.z, y: g.y, heading, speed: 0, lean: 0, pitch: g.pitch };
+      selfFeed?.mountedScooter({ ...playerMode.body.pos }, avatar.yaw);
+      ridePoseOut.reset();
+      sendRidePose(true);
+    }
     return true;
   }
   /** DISMOUNT — always onto visible ground a walker can stand on: a step to the rider's right, else the left,
@@ -2652,8 +3325,16 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     ridingDock = null;
     rideIgnore = undefined;
     playerMode.endRide(at);
+    // S6 — TAKEN IN AN ACCIDENT: the fall plays; the feed stays quiet until they are back on their feet there
+    const accident = reason === "taken" ? scooterAccidents.find((a) => a.scooterId === dock.id) : undefined;
+    // S2 — off the deck: the movement feed says where they stepped off and carries them from there
+    if (rideStreamed) { rideStreamed = false; ridePoseNow = null; if (!accident) selfFeed?.dismountedScooter(at, avatar.yaw); }
+    if (accident) beginLocalFall(accident);
     scenery.scooters?.showRidden(false);
+    // home to its rack — and the server told so, unless it is the server that took it ("taken"); the rack
+    // then draws the server's truth (app/scooterGate released)
     scenery.scooters?.setDocked(dock.id, true);
+    scooterGate.released(dock.id, reason);
     scooterState.riding = "—";
     scooterState.last = `${reason} → ${at.x.toFixed(0)}, ${at.z.toFixed(0)}`;
   }
@@ -2712,6 +3393,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     canStand: playerStand,
     radius: NAV_RADIUS,
     groundY: groundYAt,
+    // PARKOUR V1 — a peer's published feet height lifts them only onto a real standable top under them
+    topAt: (p, feet) => standables.topMatching(p, STAND_TOP_R, feet),
+    // PARKOUR V3 — each peer's own vertical continuity (stacked decks, the ramp, falls), and the routes they can take
+    supportAt: (p, maxTop) => standables.topUnder(p, STAND_TOP_R, maxTop),
+    routes: (id) => LAB_ROUTES.find((r) => r.id === id),
     toWorld: (p) => homeDeskWorldPoint(p, v1Rooms(), ROOM_WORLD_SHIFT_Z),
     lod: 1,
     // PHASE 6C — seated peers sit on this world's own chairs; see peerSeatAnchor.
@@ -2949,7 +3635,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  region roomId), and neither is a place whose occupants, boards or details anybody wants a panel
    *  about. Excluded by WHAT THEY ARE, so a third floor and its core exclude themselves. */
   const discoverableRoom = (roomId: string | null | undefined): string | null =>
-    !roomId || ELEVATOR_ROOM_IDS.has(roomId) || roomId === FLOOR2_ID || MEETING_ROOM_IDS.has(roomId) ? null : roomId;
+    !roomId || ELEVATOR_ROOM_IDS.has(roomId) || UPPER_PLATE_ROOM_IDS.has(roomId) || MEETING_ROOM_IDS.has(roomId) ? null : roomId;
   const labelRects = roomLabelRects(roomFrameSource);
   /** THE ROOMS ROOM DISCOVERY LETTERS. Not every region with a roomId is a room to letter: a lift car is
    *  96 x 56 units of sealed box, and a floor is not a room at all. Both are excluded by WHAT THEY ARE
@@ -3078,6 +3764,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   const projected = new THREE.Vector3();
   const projectedUp = new THREE.Vector3();
   const SELF_HEAD = new THREE.Vector3();
+  const OBJECT_ANCHOR = new THREE.Vector3();
   /** The same head height the coworker bodies hang their nameplates at, for the viewer's own avatar. */
   const HEAD_ANCHOR_Y_SELF = BON_STANDING_HEIGHT + 6;
   function coworkerAnchor(email: string): Vo3dScreenAnchor | null {
@@ -3167,7 +3854,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       id: personCandidateId(c.email),
       kind: "person" as const,
       pos: c.pos,
-      label: c.displayName,
+      // INTERACTION V2 — the prompt is a verb, like every other: "[E] Talk to Alex"
+      label: `Talk to ${c.displayName}`,
       // People belong to no room bucket; PLAYER mode adds them to whichever bucket it is scoring, so this
       // is only ever read back as a label. The room the person is standing in is V1's question, not ours.
       roomId: "",
@@ -3313,13 +4001,19 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // presents, and which peers are on the floor you are on. The cinematic calls it once, with the lift
   // doors shut on both sides (interact/FloorTransition), and nothing else calls it at all.
 
-  const specOf = (floor: Vo3dFloorId): ElevatorSpec => (floor === FLOOR2_ID ? FLOOR2_ELEVATOR : GROUND_ELEVATOR);
-  const coreOf = (floor: Vo3dFloorId): ElevatorCoreBuild => (floor === FLOOR2_ID ? floor2ElevatorBuild : groundElevatorBuild);
+  const specOf = (floor: Vo3dFloorId): ElevatorSpec => ELEVATORS[floor];
+  const coreOf = (floor: Vo3dFloorId): ElevatorCoreBuild => coreBuilds[floor]!;
   /** the plate OFFICE is fenced to, per floor */
-  const floorFrameOf = (floor: Vo3dFloorId): Rect => (floor === FLOOR2_ID ? FLOOR2_FRAME : plan.frame);
+  const floorFrameOf = (floor: Vo3dFloorId): Rect => upperPlate(floor)?.frame ?? plan.frame;
   /** WHICH FLOOR THE BODY IS ON. The world's own answer, and the only one: the movement feed's place
    *  name, the roster filter, the view rules and the camera fence all read it. */
   let currentFloor: Vo3dFloorId = GROUND_FLOOR_ID;
+  // S4 — the cars become solid to this body only now: the start-up spawn above asks the stand test before
+  // `currentFloor` exists, and the cars have nothing to say about a body that has not been placed yet
+  carBlocks = (p, radius) => {
+    if (currentFloor !== GROUND_FLOOR_ID || !Number.isFinite(env.lastTrafficTime)) return false;
+    return carStepBlocked(trafficTimeline, playerMode.body.pos, p, radius, env.lastTrafficTime);
+  };
   /** the player's own camera pitch, held while the cinematic borrows it */
   let restorePitch: number | null = null;
   let cinematicPitch: number | null = null;
@@ -3338,9 +4032,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   function applyWorldVisibility(): void {
     const upstairs = currentFloor !== GROUND_FLOOR_ID;
     mirror.root.visible = !upstairs;
-    floor2Root.visible = currentFloor === FLOOR2_ID;
-    groundElevatorBuild.group.visible = !upstairs;
-    floor2ElevatorBuild.group.visible = currentFloor === FLOOR2_ID;
+    for (const [f, root] of floorRoots) root.visible = currentFloor === f;
+    for (const f of FLOOR_ORDER) coreOf(f).group.visible = currentFloor === f;
   }
 
   /** ONE EXTERIOR FOR THE WHOLE BUILDING. The campus (build/exterior) and the real AI Lab are built
@@ -3351,14 +4044,13 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  nobody can walk out there from upstairs. Everything else about both groups (tint, lamps, puddles,
    *  wind, the Lab's pulse) is untouched because nothing else knows they moved. */
   function exteriorAnchorOf(floor: Vo3dFloorId): { x: number; y: number; z: number } {
-    const f = floorFrameOf(floor);
-    return { x: f.x - plan.frame.x, y: -exteriorDrop(floor, storeyH), z: f.z - plan.frame.z };
+    return exteriorAnchorFor(floor, plan.frame, storeyH);
   }
   function anchorExterior(): void {
     const a = exteriorAnchorOf(currentFloor);
     env.anchorExterior(a, floorFrameOf(currentFloor), currentFloor !== GROUND_FLOOR_ID);
     aiLab.group.position.set(a.x, a.y, a.z);
-    floor2Context.setDrop(exteriorDrop(FLOOR2_ID, storeyH));
+    for (const [f, ctx] of storeyContexts) ctx.setDrop(exteriorDrop(f, storeyH));
   }
 
   function applyFloor(to: Vo3dFloorId): void {
@@ -3402,7 +4094,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
         playerMode.camera.yaw = cameraYawFor(next);
       }
       if (r.arrived) avatar.play(CLIP_IDLE);
-      else { avatar.play(CLIP_WALK); avatar.setClipTimeScale(CLIP_WALK, ELEVATOR_RIDE.walkSpeed / 30); }
+      else { avatar.play(CLIP_WALK); avatar.setClipTimeScale(CLIP_WALK, gaitRate(avatar.runtime, CLIP_WALK, ELEVATOR_RIDE.walkSpeed)); }
       return r.arrived;
     },
     setYaw: (yaw, snap) => {
@@ -3514,6 +4206,23 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   /** THE FLOOR THE LIFT WOULD GO TO FROM HERE. Two floors, so it is the other one; the registry's order
    *  is what a three-floor selector will read instead. */
   const otherFloor = (): Vo3dFloorId => FLOOR_ORDER.find((f) => f !== currentFloor) ?? GROUND_FLOOR_ID;
+
+  /** THE FLOOR PANEL, forced on while the building still has two floors — `?liftpicker=1`, so the panel
+   *  can be looked at before a third floor exists. Off, the two-floor building never shows it. */
+  const forceFloorPicker = flags.get("liftpicker") === "1";
+  /** SOMEBODY USED THE LIFT WITHOUT SAYING WHERE TO — the call control, the interact key, a click, the GUI.
+   *  Two floors: there is one answer, so this IS the one-click ride it has always been. More (or the dev
+   *  flag): the overlay is asked to show the floor panel, and the floor chosen there comes back through
+   *  `useElevator(to)` → callElevator(to), the one path every ride takes. Nothing moves until then, and a
+   *  directed ride (Go Together, Walk There, a restore) never comes through here at all. */
+  function requestElevator(): boolean {
+    const ask = coworkerInteractions?.onElevatorPicker;
+    if ((!forceFloorPicker && !elevatorNeedsPicker(FLOOR_ORDER)) || !ask) return callElevator(otherFloor());
+    if (!floorTransition || floorTransition.busy) return false;
+    ask({ from: currentFloor });
+    // FALSE ON PURPOSE: nothing is driving the body yet, so PLAYER keeps it while the panel is open
+    return false;
+  }
 
   /** USE THE LIFT. From the apron in front of the doors it starts the journey; from anywhere else it
    *  walks the employee to the call control first, through the approach the control already carries, and
@@ -3670,7 +4379,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // A DIRECTED MEETING is left the same way: the meeting stops walking the body and stays out of the way
   // for the rest of this meeting (app/meetingDirector userTookOver) — no reacquisition loop.
   onWindow("keydown", (e) => {
-    if (e.key !== "Escape" || e.defaultPrevented || !stack.guided || document.pointerLockElement || isTypingTarget(e)) return;
+    if (e.key !== "Escape" || e.defaultPrevented || interactionMenuOpen || !stack.guided || document.pointerLockElement || isTypingTarget(e)) return;
     if (guidedHolds.travel) cancelGuidedTravel();
     else if (guidedHolds.meeting) meetingDirector.userTookOver();
   });
@@ -4043,6 +4752,21 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     toucanCalled = false;
     toucan.setSummonTarget(null);
   }
+  /** THE ARM PERCH (world/toucanPerch decides; this feeds it). A bird called to a HumanBase body standing free lands on
+   *  its presented fist (human/armPerch: the falconer's arm, straight ahead and a little raised) instead of hovering beside
+   *  the shoulder. The arm comes up as the bird closes in; the bird's own landing glides it onto the fist, drawn at
+   *  PERCH_SCALE (a companion size: a chibi's arm is ~8 u long and its head ~18 u tall — measured clear of face and hair
+   *  at this size), folds its wings and turns to face the employee, who looks back at it. Released, it opens its wings on the arm and
+   *  lifts off, and only then does the arm come down. Walking off or sitting lowers the arm and hands the bird back to
+   *  V1's hover. Never while the bird is on an AI Workforce job (that flow owns the landing). */
+  const toucanPerch = new ToucanPerch(toucan);
+  function perchToucan(): void {
+    toucanPerch.update(avatar.armPerch, {
+      free: (stack.owns("Idle") || stack.owns("Player")) && !seatedNow(),
+      pos: avatar.worldPosition(),
+      forward: new THREE.Vector3(0, 0, 1).applyQuaternion(avatar.root.getWorldQuaternion(new THREE.Quaternion())).setY(0).normalize(),
+    }, toucanCalled, toucanDirected !== null);
+  }
 
   // ---- THE AI WORKFORCE's CAMERA (WATCH IN LAB only — app/labWorkforce never directs it otherwise) ----------
   /** follow the bird in 3D EXPLORE, frame the team, then hand back the view you had */
@@ -4214,6 +4938,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // THE PARK ANCHOR, every frame while the bird is called — this body, wherever it has walked to. Null
     // is the release, and the bird reads both through the same one setter (world/Toucan setSummonTarget).
     toucan.setSummonTarget(toucanDirected ?? (toucanCalled ? { x: body.x, z: body.z } : null));
+    perchToucan();
     const wantsCall = toucan.update(dt, env.weather, env.phase ?? "day", outdoors);
     // ARRIVAL IS AN EVENT THE HOST WAITS FOR. Published after the step that could have changed it, and
     // only on a real transition — this runs at 60 Hz.
@@ -4496,6 +5221,158 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     }
     return null;
   }
+  // ---- INTERACTION V2: OFFICE VIEW SELECTION + HOVER -------------------------------------------------
+  /** WHAT IS UNDER THE POINTER, weighed the way the click always was: a person standing IN FRONT of a piece
+   *  of furniture wins it, one behind it loses (both picks are the same ray, so hit distance is honest). */
+  function pointerTarget(cx: number, cy: number): { person: { email: string; displayName: string } } | { object: string } | null {
+    const person = pickCoworkerAt(cx, cy);
+    const hit = pickInteractionHit(cx, cy);
+    if (person && (!hit || person.distance <= hit.distance)) return { person };
+    return hit ? { object: hit.id } : null;
+  }
+  const isElevatorCall = (id: string): boolean => id.endsWith("/call") && ELEVATOR_ROOM_IDS.has(world.get(id).roomId);
+  /** the shared contract's menu for one object (app/interactables) — occupancy read off the seat mapping */
+  function selectionOf(id: string): Vo3dObjectSelection | null {
+    if (!world.entities.has(id)) return null;
+    const e = world.get(id);
+    const occupied = e.capabilities.seat ? occupiedSeatIds.has(id)
+      : e.capabilities.lounge ? loungeSeats.filter((s2) => s2.id === id).every((s2) => occupiedSeatIds.has(seatAnchorId(s2.id, s2.slot.id)))
+      : false;
+    return objectSelectionFor(e, { elevatorCall: isElevatorCall(id), occupied });
+  }
+  let selectedObject: string | null = null;
+  /** the point a sofa was clicked at, so "Sit" picks the cushion nearest it — exactly as the direct click did */
+  let selectedObjectNear: Vec2 | undefined;
+  /** Tell the host which object's card to show, or none. A host with no object menu (the standalone dev page,
+   *  test doubles) keeps the old one-click behaviour: the object's own verb runs at once. */
+  function selectObject(id: string | null, near?: Vec2): void {
+    if (id === null) {
+      if (selectedObject === null) return;
+      selectedObject = null;
+      coworkerInteractions?.onObjectSelected?.(null);
+      return;
+    }
+    const sel = selectionOf(id);
+    if (!sel) return;
+    if (!coworkerInteractions?.onObjectSelected) { runObjectAction(id, "primary", near); return; }
+    selectedObject = id;
+    selectedObjectNear = near;
+    coworkerInteractions.onObjectSelected(sel);
+  }
+  /** ONE CLICK'S SELECTION (left button, or a right click that landed on somebody or something). True when it
+   *  picked a person or an object — the caller then does nothing else with the click. */
+  function selectUnderPointer(cx: number, cy: number): boolean {
+    const t = pointerTarget(cx, cy);
+    if (!t) return false;
+    // ONE WORLD SELECTION AT A TIME: a person, an object and a room panel never stand open together — V1 closes
+    // its room sidebar on a character, seat, reception or HR-desk click
+    selectRoom(null);
+    if ("person" in t) {
+      selectObject(null);
+      selectCoworker({ email: t.person.email, displayName: t.person.displayName });
+      return true;
+    }
+    selectCoworker(null);
+    selectObject(t.object, floorPoint(cx, cy) ?? undefined);
+    return true;
+  }
+  /** RUN ONE MENU ROW — the SAME starters PLAYER's E key reaches (activateInteractable's bridge), so a chair,
+   *  the lift and the portal mean the same thing from either camera. */
+  function runObjectAction(id: string, key: Vo3dObjectActionKey, near?: Vec2): void {
+    if (!world.entities.has(id)) return;
+    const ent = world.get(id);
+    selectedObject = null;
+    // GO TOGETHER — walking up to a chair, a kiosk or a portal is the person taking their own body.
+    userTookBody();
+    if (key === "walk") {
+      const d = describeInteractable(ent, { elevatorCall: isElevatorCall(id) });
+      if (d) { approachCtl.cancel(); walkToGround(d.anchor.x, d.anchor.z); }
+      return;
+    }
+    // the portal is a transition, not a walk-up: it has to mean the same thing pressing E on it means
+    if (id === CHAMPIONSHIP_ENTRANCE_ID || id === CAVE_EXIT_ID || id === CAVE_SCREEN_ID) activateInteractable(id, "approach");
+    // THE CALL PLATE, for the same reason: the one control that moves you between floors
+    else if (isElevatorCall(id)) requestElevator();
+    // PHASE 6C — a chair SITS, through the same bridge PLAYER mode's E key uses (occupancy refusal included)
+    else if (ent.capabilities.seat) activateInteractable(id, "seat");
+    else if (ent.capabilities.lounge) activateInteractable(id, "lounge", near);
+    else startApproach(id);
+  }
+
+  // HOVER: what a click would pick, shown before it is clicked — a soft ring on the floor at it (the same ring
+  // language PLAYER's target uses), a pointer cursor and a one-line name beside the cursor. Resolved at most
+  // every HOVER_MS from the last pointer position, never while a button is held (a drag is the camera's).
+  const HOVER_MS = 90;
+  let hoverAt: { x: number; y: number } | null = null;
+  let hoverDirty = false;
+  let hoverResolvedAt = 0;
+  let hoverKey = "";
+  const hoverRing = (() => {
+    const g = new THREE.RingGeometry(10, 12.5, 40);
+    g.rotateX(-Math.PI / 2);
+    const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: 0x8fd8ff, transparent: true, opacity: 0.6, depthWrite: false, toneMapped: false }));
+    m.name = "office-hover-ring";
+    m.visible = false;
+    m.renderOrder = 5;
+    R.scene.add(m);
+    return m;
+  })();
+  const hoverTip = document.createElement("div");
+  hoverTip.style.cssText =
+    "position:fixed;left:0;top:0;pointer-events:none;z-index:6;padding:4px 10px;border-radius:12px;" +
+    "background:rgba(20,18,16,0.72);color:#fff;font:600 12px/1.4 system-ui,sans-serif;white-space:nowrap;" +
+    "opacity:0;transition:opacity 120ms;";
+  document.body.appendChild(hoverTip);
+  function clearHover(): void {
+    if (!hoverKey) return;
+    hoverKey = "";
+    hoverRing.visible = false;
+    hoverTip.style.opacity = "0";
+    canvas.style.cursor = "";
+  }
+  /** a person's ring follows their body (they walk); an object's sits where its contract says to look */
+  function hoverRingPoint(): Vec2 | null {
+    if (hoverKey.startsWith("person:")) return coworkers.pointOf(hoverKey.slice(7));
+    const id = hoverKey.slice(7);
+    if (!world.entities.has(id)) return null;
+    const e = world.get(id);
+    const d = describeInteractable(e, { elevatorCall: isElevatorCall(id) });
+    // a walk-up fixture is marked where you will stand (the lift's plate is up a wall); furniture at itself
+    return d?.kind === "approach" ? d.anchor : e.transform.pos;
+  }
+  function updateHover(now: number): void {
+    if (playerMode.active || edit.editMode || !hoverAt) { clearHover(); return; }
+    if (hoverKey) { const p = hoverRingPoint(); if (p) hoverRing.position.set(p.x, 0.6, p.z); }
+    if (!hoverDirty || now - hoverResolvedAt < HOVER_MS) return;
+    hoverDirty = false;
+    hoverResolvedAt = now;
+    const t = pointerTarget(hoverAt.x, hoverAt.y);
+    let key = "", text = "";
+    if (t && "person" in t) { key = `person:${t.person.email}`; text = t.person.displayName; }
+    else if (t) {
+      const sel = selectionOf(t.object);
+      if (sel) { key = `object:${t.object}`; text = sel.subtitle ? `${sel.title} · ${sel.subtitle}` : `${sel.title} · ${sel.actions[0].label}`; }
+    }
+    if (!key) { clearHover(); return; }
+    if (key !== hoverKey) {
+      hoverKey = key;
+      hoverTip.textContent = text;
+      canvas.style.cursor = "pointer";
+      hoverTip.style.opacity = "1";
+      const p = hoverRingPoint();
+      hoverRing.visible = p !== null;
+      if (p) hoverRing.position.set(p.x, 0.6, p.z);
+    }
+    hoverTip.style.transform = `translate(${hoverAt.x + 14}px, ${hoverAt.y + 16}px)`;
+  }
+  onCanvas("pointermove", (e) => {
+    if (e.buttons !== 0) { hoverAt = null; clearHover(); return; }
+    hoverAt = { x: e.clientX, y: e.clientY };
+    hoverDirty = true;
+    if (hoverKey) hoverTip.style.transform = `translate(${e.clientX + 14}px, ${e.clientY + 16}px)`;
+  });
+  onCanvas("pointerleave", () => { hoverAt = null; clearHover(); });
+
   onCanvas("pointerdown", (e) => {
     if (e.button !== 0 || playerMode.active) return; // PLAYER owns the canvas: see player/PlayerInput
     if (edit.editMode && (editMode2 === "surface" || editMode2 === "lighting")) {
@@ -4566,7 +5443,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     rightDownAt = null;
     if (!down || playerMode.active || edit.editMode || params.cameraMode !== "office") return;
     if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) return; // a drag is not a destination
+    // INTERACTION V2 — A RIGHT CLICK ON SOMEBODY OR SOMETHING IS NOT A CLICK ON THE FLOOR UNDER THEM: it opens
+    // the same card the left button does, and walks nobody into the furniture's footprint.
+    if (selectUnderPointer(e.clientX, e.clientY)) return;
     approachCtl.cancel();
+    selectObject(null);
     const p = floorPoint(e.clientX, e.clientY);
     if (p) { userTookBody(); walkToGround(p.x, p.z); }
   });
@@ -4597,42 +5478,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       callToucan();
       return;
     }
-    const person = pickCoworkerAt(e.clientX, e.clientY);
-    const hit = pickInteractionHit(e.clientX, e.clientY);
-    if (person && (!hit || person.distance <= hit.distance)) {
-      // Selecting a PERSON drops the room selection, exactly as V1's handleCharacterClick clears its room
-      // sidebar: one world selection at a time, and the card that opens is about them, not about the floor.
-      selectRoom(null);
-      selectCoworker({ email: person.email, displayName: person.displayName });
-      return;
-    }
-    // Anything else is a dismissal: selecting a chair, a door or a patch of floor is not selecting a
-    // person, and leaving the card up over a world that has moved on is how it ends up pointing at nobody.
+    if (selectUnderPointer(e.clientX, e.clientY)) return;
+    // Anything else is a dismissal: a patch of floor is not a person or an object, and leaving a card up over a
+    // world that has moved on is how it ends up pointing at nobody.
     selectCoworker(null);
-    const picked = hit?.id ?? null;
-    if (picked) {
-      // Same rule as a person: a chair, a door or the portal is its own interaction, and V1 closes the
-      // room panel for every one of them (seat, reception and HR-desk clicks all setRoomSidebar(null)).
-      selectRoom(null);
-      const ent = world.get(picked);
-      // GO TOGETHER — walking up to a chair, a kiosk or a portal is the person taking their own body.
-      userTookBody();
-      // the portal is a transition, not a walk-up: clicking it has to mean the same thing pressing E on
-      // it means, or the one interaction in the world that moves you between volumes would behave
-      // differently depending on which camera you happened to be in
-      if (picked === CHAMPIONSHIP_ENTRANCE_ID || picked === CAVE_EXIT_ID || picked === CAVE_SCREEN_ID) activateInteractable(picked, "approach");
-      // THE CALL PLATE, for the same reason the portal is here: clicking it has to mean exactly what
-      // pressing E on it means, or the one control that moves you between floors would behave
-      // differently depending on which camera you happened to be in.
-      else if (picked.endsWith("/call") && ELEVATOR_ROOM_IDS.has(world.get(picked).roomId)) callElevator();
-      // PHASE 6C — a chair click SITS, through the same bridge PLAYER mode's E key uses (occupancy refusal
-      // included). Before this, Office View walked up to a desk chair and faced it, and a non-Reception
-      // sofa indexed a list it was not in.
-      else if (ent.capabilities.seat) activateInteractable(picked, "seat");
-      else if (ent.capabilities.lounge) activateInteractable(picked, "lounge", floorPoint(e.clientX, e.clientY) ?? undefined);
-      else startApproach(picked);
-      return;
-    }
+    selectObject(null);
     // PART 3 — A LEFT CLICK SELECTS; IT DOES NOT WALK. V1's left button picks a character, a seat or a
     // room and its right button is what moves the avatar, and OFFICE now matches that.
     //
@@ -4923,7 +5773,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (g) { surfaces.collect(DESIGN_ROOM.id, g); leds.collect(DESIGN_ROOM.id, g); }
     if (edit.selectedSurface?.startsWith(DESIGN_ROOM.id)) edit.selectSurface(null);
     door = new SlidingDoor(mirror.view(DOOR_ID), doorEntity.capabilities.door!, doorEntity.transform.pos);
-    seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), seatSpecFor(CHAIR_4_ID), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), seatSpecFor(CHAIR_4_ID), (to) => planWalk(avatar.position, to, walkability, inBounds), () => travelSpeed());
   };
   geo.add(params, "wallHeight", 20, 110, 1).onFinishChange(rebuild); geo.add(params, "frontWall", ["low", "full", "hidden"]).onChange(rebuild);
   geo.add(params, "sway").name("plant sway").onChange((v: boolean) => (mirror.sway.enabled = v));
@@ -4932,7 +5782,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   av.add(params, "avatar").name("show avatar").onChange((v: boolean) => (avatar.root.visible = v));
   av.add(params, "avatarLod", [0, 1, 2]).name("LOD").onChange(loadAvatar);
   av.add(params, "avatarLit").name("lit (off = production unlit)").onChange((v: boolean) => avatar.setLit(v));
-  av.add(params, "walkSpeed", 8, 120, 1).name(`speed (units/s) — sprint x${SPRINT_MULTIPLIER.toFixed(2)}`).onChange((v: number) => (navCtl.speed = v));
+  av.add(params, "walkSpeed", 8, 120, 1).name(`speed (units/s) — sprint x${SPRINT_MULTIPLIER.toFixed(2)}`).onChange(() => syncTravelSpeed());
   // ---- the roster's coworkers, as the world actually built them (Phase 4A) -------------------------
   // The DOM readout in app/Vo3dHost.tsx reports what V1's ROSTER said; this one reports what the WORLD
   // did with it, and the two are not the same question. A person can be resolved and still not be
@@ -5096,6 +5946,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   exec.add({ f: () => startApproach(CABINET_R_INTERACTION_ID) }, "f").name("▶ read the awards (east)");
   exec.add({ f: () => startApproach(MEDIA_INTERACTION_ID) }, "f").name("▶ view the display");
   exec.add({ f: () => startApproach(CREDENZA_INTERACTION_ID) }, "f").name("▶ display credenza");
+  exec.add({ f: () => startApproach(HR_SERVICES_INTERACTION_ID) }, "f").name("▶ HR Services");
   exec.add(execState, "chair").disable().listen();
   exec.add(execState, "slot").disable().listen();
   exec.add(execState, "seat").disable().listen();
@@ -5358,7 +6209,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   liftGui.add(floorTransition!.state, "busy").name("journey running").disable().listen();
   liftGui.add(floorTransition!.state, "journeys").name("journeys").disable().listen();
   liftGui.add(floorTransition!.state, "last").name("last").disable().listen();
-  liftGui.add({ go: () => callElevator() }, "go").name("▶ use the elevator (walks there first)");
+  liftGui.add({ go: () => requestElevator() }, "go").name("▶ use the elevator (walks there first)");
   // PLAYER FIRST, THEN THE PLACEMENT. PlayerMode.enter re-derives the camera yaw from the AVATAR's yaw,
   // which is the other of this world's two yaw conventions — so placing and facing first, then entering,
   // leaves the boom in front of the body looking at the back of its head.
@@ -5673,6 +6524,122 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       || (hubSeat?.moved ?? false) || (execSeat?.moved ?? false) || (cmsSeat?.moved ?? false)
       || (aiSeat?.moved ?? false) || (devSeat?.moved ?? false) || (qaSeat?.moved ?? false);
   }
+  /** INTERACTION V2 — THE EMPLOYEE'S OWN MOVEMENT, ONE STEP: every seat and walk-up controller, the walker, the
+   *  body, the seated hand-off and the last turn of an approach. Called by the frame loop, and — with nothing
+   *  drawn — by the hidden-tab catch-up (see advanceHiddenSelf), which is why it is a function: one copy of the
+   *  rules, whichever clock is driving them. `dt` in milliseconds, as the loop's. */
+  function stepSelfCore(dt: number): void {
+    seat.update(dt / 1000);
+    meetingSeat?.update(dt / 1000);
+    gamingSeat?.update(dt / 1000);
+    hubSeat?.update(dt / 1000);
+    // EVERY movable-seat controller has to be ticked here. One that is constructed, acquires the
+    // "Interaction" stack lock in sit(), and is then never updated leaves the avatar owned forever: the
+    // sequence stops in "approaching", Player movement stays locked and only a reload recovers. There is
+    // no self-healing path — SeatInteraction advances on nothing but this call. executive.test.ts asserts
+    // that every SeatInteraction declared in this file appears in this block.
+    execSeat?.update(dt / 1000);
+    cmsSeat?.update(dt / 1000);
+    aiSeat?.update(dt / 1000);
+    devSeat?.update(dt / 1000);
+    qaSeat?.update(dt / 1000);
+    restoredSeat?.update(dt / 1000);
+    otherSeat?.update(dt / 1000);
+    loungeSeat?.update(dt / 1000);
+    restoredLounge?.update(dt / 1000);
+    approachCtl.update(dt / 1000);
+    syncTravelSpeed(); // a switch of view mid-walk retakes the pace on the next frame
+    navCtl.update(dt / 1000);
+    avatar.update(dt / 1000);
+    const bp = avatar.worldPosition();
+    // PHASE 6C — THE SEATED HAND-OFF. One transition each way, read from the interactions' own states:
+    // the frame the body commits to a chair the feed resolves the movement that brought it there as a
+    // seated arrival in that chair (the chair's own yaw, not the body's mid-turn one); the frame it
+    // leaves, the feed resumes publishing the ordinary legs that walk it away.
+    if (standWhenSeated) {
+      const e = engagedSeat();
+      if (e) { e.stand(); standWhenSeated = false; } else if (!seatEngaged()) standWhenSeated = false;
+    }
+    const nowSeated = seatedNow();
+    if (nowSeated !== selfSeatedPublished) {
+      selfSeatedPublished = nowSeated;
+      if (nowSeated && currentSeatAnchor) selfFeed?.seated({ x: bp.x, z: bp.z }, seatedYawOf(currentSeatAnchor) ?? avatar.yaw, currentSeatAnchor);
+      else if (!nowSeated) {
+        selfFeed?.stood({ x: bp.x, z: bp.z }, avatar.yaw);
+        // CLEARED ONLY WHEN NO SIT IS UNDER WAY. Choosing another chair while seated resets the old
+        // interaction and starts the new one in the same call — the frame after, the body is not
+        // seated (it is approaching), and clearing here wiped the NEW anchor, so that sit was never
+        // published as seated: every browser but this one saw the person standing at the chair.
+        if (!seatEngaged()) currentSeatAnchor = null;
+      }
+    }
+    if (coworkerApproach?.turning) {
+      const next = stepAngle(avatar.yaw, coworkerApproach.yaw, APPROACH_TURN_RATE * (dt / 1000));
+      avatar.setYaw(next);
+      if (Math.abs(wrapAngle(coworkerApproach.yaw - next)) < 0.02) {
+        avatar.setYaw(coworkerApproach.yaw);
+        const arrived = coworkerApproach.email;
+        coworkerApproach = null;
+        // Published FIRST (the line below sees `turning` false and resolves the walk with this exact
+        // yaw), reported to the host after — V1's quest signal must never outrun the movement that
+        // earned it.
+        selfFeed?.frame(0, { x: bp.x, z: bp.z }, avatar.yaw, false);
+        coworkerInteractions?.onApproachArrived(arrived);
+      }
+    }
+  }
+  // ---- INTERACTION V2: A HIDDEN TAB KEEPS WALKING ------------------------------------------------------
+  // A backgrounded tab gets no animation frames at all, and the loop's own `dt` is clamped to 250 ms, so a walk
+  // started in Office View used to stand still behind another tab and then crawl on at a quarter of a second per
+  // frame on return. The walk was never the problem — it is an already-validated path at a known speed — only the
+  // clock driving it was. So while the tab is hidden the SAME step (stepSelfCore) is driven from a 1 s timer (the
+  // browser throttles timers there; never a busy loop), in REAL elapsed time, cut into short sub-steps so a seat's
+  // walk → glide → sit and an approach's last turn run exactly as they do on screen; and on return the remainder is
+  // caught up before the first frame is drawn. Only while something is actually moving the body: an idle body
+  // costs one comparison a second. Nothing is drawn, the camera is not touched, and peers are told exactly what a
+  // visible tab would tell them (the movement feed's own arrival and seated events) — their replay of the walk is
+  // already running on the published duration, so they see one coherent journey either way.
+  const HIDDEN_TICK_MS = 1000;
+  const HIDDEN_SUBSTEP_MS = 100;
+  /** a tab away for longer than this resumes from here: a body with nothing left to do stops stepping anyway */
+  const HIDDEN_CATCHUP_MAX_MS = 15 * 60_000;
+  let lastSelfStepAt = performance.now();
+  let hiddenTimer: ReturnType<typeof setInterval> | null = null;
+  /** is anything driving the employee's own body that a clock must advance? (PLAYER never: no keys arrive hidden) */
+  const selfInMotion = (): boolean =>
+    params.avatar && !playerMode.active && !(floorTransition?.busy ?? false) && !(caveTransition?.busy ?? false)
+    && (navCtl.moving || approachCtl.state === "walking" || approachCtl.state === "turning" || coworkerApproach?.turning === true || (seatEngaged() && !seatedNow()));
+  /** advance the body by `ms` of real time, in sub-steps, through the one movement step and the one feed */
+  function advanceHiddenSelf(ms: number): void {
+    let left = Math.min(ms, HIDDEN_CATCHUP_MAX_MS);
+    while (left > 0 && selfInMotion()) {
+      const step = Math.min(HIDDEN_SUBSTEP_MS, left);
+      stepSelfCore(step);
+      const bp = avatar.worldPosition();
+      // the same per-frame guards the loop applies: a door held shut, a locked room, the exit gate
+      applyExitGate({ x: bp.x, z: bp.z });
+      applyRoomLocks({ x: bp.x, z: bp.z });
+      selfFeed?.frame(step, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0 || coworkerApproach?.turning === true || directedTurn !== null || playerMode.rolling || playerMode.traversing || playerMode.onRoute);
+      left -= step;
+    }
+  }
+  const hiddenTabTick = (): void => {
+    const now = performance.now();
+    advanceHiddenSelf(now - lastSelfStepAt);
+    lastSelfStepAt = now;
+  };
+  onDocument("visibilitychange", () => {
+    if (disposed) return;
+    if (document.visibilityState === "hidden") {
+      lastSelfStepAt = performance.now();
+      if (hiddenTimer === null) hiddenTimer = setInterval(hiddenTabTick, HIDDEN_TICK_MS);
+      return;
+    }
+    if (hiddenTimer !== null) { clearInterval(hiddenTimer); hiddenTimer = null; }
+    // BACK: catch up the remainder, then hand the loop a fresh clock so its first frame does not add it again
+    hiddenTabTick();
+    lastFrame = performance.now();
+  });
   // THE ONE FLUSH dispose() CANNOT DO. A reload, a tab close or a back navigation tears the document down
   // WITHOUT unmounting React, so app/Vo3dHost.tsx's cleanup — and therefore dispose() — never runs. The
   // leg in flight would then never be resolved, and the employee's durable position would stay one leg
@@ -5745,6 +6712,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // world actually moved. applyEnvPhase above RETARGETS, this is what travels.
     env.tick(dt / 1000);
     env.follow(dt / 1000); // the sky dome rides the orbit target; the rain field rides the active camera
+    updateHover(now); // INTERACTION V2 — Office View's hover, throttled; a no-op in PLAYER and the editor
     if (scenery.root.visible) {
       if (!crewRequested) { crewRequested = true; void crew.load(2); }
       crew.update(Date.now() / 1000, dt / 1000, scenery.root.worldToLocal(R.activeCamera.getWorldPosition(crewCam)));
@@ -5756,51 +6724,20 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // PLAYER steps FIRST: it writes the avatar transform for this frame and yields silently whenever an
       // interaction owns Bon, so the controllers below still run exactly as they always have.
       if (playerMode.active) playerMode.update(dt / 1000);
-      seat.update(dt / 1000);
-      meetingSeat?.update(dt / 1000);
-      gamingSeat?.update(dt / 1000);
-      hubSeat?.update(dt / 1000);
-      // EVERY movable-seat controller has to be ticked here. One that is constructed, acquires the
-      // "Interaction" stack lock in sit(), and is then never updated leaves the avatar owned forever: the
-      // sequence stops in "approaching", Player movement stays locked and only a reload recovers. There is
-      // no self-healing path — SeatInteraction advances on nothing but this call. executive.test.ts asserts
-      // that every SeatInteraction declared in this file appears in this block.
-      execSeat?.update(dt / 1000);
-      cmsSeat?.update(dt / 1000);
-      aiSeat?.update(dt / 1000);
-      devSeat?.update(dt / 1000);
-      qaSeat?.update(dt / 1000);
-      restoredSeat?.update(dt / 1000);
-      otherSeat?.update(dt / 1000);
-      loungeSeat?.update(dt / 1000);
-      restoredLounge?.update(dt / 1000);
-      approachCtl.update(dt / 1000);
-      navCtl.update(dt / 1000);
-      avatar.update(dt / 1000);
+      // PARKOUR V1 — tell the publisher how high the feet stand (a furniture top) so peers and late joiners see it;
+      // undefined on the floor, in the air, or whenever Player View does not own the body (a seat, a walk)
+      // (PARKOUR V2: while a vault or a mantle runs, the height it ends at was noted when it started — left as is)
+      if (selfMovement?.noteFeet && !playerMode.traversing && !playerMode.onRoute) {
+        const fp = avatar.worldPosition();
+        const top = topUnder(fp, playerMode.state.feet);
+        const owns = playerMode.active && stack.owns("Player") && !playerMode.airborne;
+        selfMovement.noteFeet(owns && top > avatar.groundAt(fp) + 0.5 ? top : undefined);
+      }
+      stepSelfCore(dt);
+      lastSelfStepAt = now;
       const bp = avatar.worldPosition();
-      // PHASE 6C — THE SEATED HAND-OFF. One transition each way, read from the interactions' own states:
-      // the frame the body commits to a chair the feed resolves the movement that brought it there as a
-      // seated arrival in that chair (the chair's own yaw, not the body's mid-turn one); the frame it
-      // leaves, the feed resumes publishing the ordinary legs that walk it away.
-      if (standWhenSeated) {
-        const e = engagedSeat();
-        if (e) { e.stand(); standWhenSeated = false; } else if (!seatEngaged()) standWhenSeated = false;
-      }
-      const nowSeated = seatedNow();
-      if (nowSeated !== selfSeatedPublished) {
-        selfSeatedPublished = nowSeated;
-        if (nowSeated && currentSeatAnchor) selfFeed?.seated({ x: bp.x, z: bp.z }, seatedYawOf(currentSeatAnchor) ?? avatar.yaw, currentSeatAnchor);
-        else if (!nowSeated) {
-          selfFeed?.stood({ x: bp.x, z: bp.z }, avatar.yaw);
-          // CLEARED ONLY WHEN NO SIT IS UNDER WAY. Choosing another chair while seated resets the old
-          // interaction and starts the new one in the same call — the frame after, the body is not
-          // seated (it is approaching), and clearing here wiped the NEW anchor, so that sit was never
-          // published as seated: every browser but this one saw the person standing at the chair.
-          if (!seatEngaged()) currentSeatAnchor = null;
-        }
-      }
       seatSyncState.anchor = currentSeatAnchor ?? "none";
-      seatSyncState.seated = nowSeated ? "yes" : "no";
+      seatSyncState.seated = selfSeatedPublished ? "yes" : "no";
       facingState.anchor = currentSeatAnchor ?? "none (sit in a seat)";
       facingState.unsaved = unsavedSeatFacingCount();
       if (currentSeatAnchor) { const f = seatFacingFor(currentSeatAnchor); if (f && f !== facingState.facing) { facingState.facing = f; facingCtl.updateDisplay(); } }
@@ -5838,20 +6775,6 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // body from the call's own presenter (see syncPresenterClip) — no new wire.
       navCtl.restClip = meetingDirector.state.phase === "presenting" && directedTurn === null ? PRESENTER_CLIP : null;
       syncPresenterClip();
-      if (coworkerApproach?.turning) {
-        const next = stepAngle(avatar.yaw, coworkerApproach.yaw, APPROACH_TURN_RATE * (dt / 1000));
-        avatar.setYaw(next);
-        if (Math.abs(wrapAngle(coworkerApproach.yaw - next)) < 0.02) {
-          avatar.setYaw(coworkerApproach.yaw);
-          const arrived = coworkerApproach.email;
-          coworkerApproach = null;
-          // Published FIRST (the line below sees `turning` false and resolves the walk with this exact
-          // yaw), reported to the host after — V1's quest signal must never outrun the movement that
-          // earned it.
-          selfFeed?.frame(0, { x: bp.x, z: bp.z }, avatar.yaw, false);
-          coworkerInteractions?.onApproachArrived(arrived);
-        }
-      }
       // THE CONVERSATION POSE, applied where every other clip decision has already been made this frame.
       // Gated on an idle ControllerStack so walking, seating, an interaction and PLAYER mode all outrank
       // it — the same ordering V1's own resolveCharacterAnimState uses.
@@ -5860,10 +6783,29 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // the body stayed frozen in the gesture it happened to be in. `avatar.play` is guarded on the
       // current clip, so re-asserting it every frame costs nothing.
       if (stack.owner === "Idle" && !seatedNow()) avatar.play(selfConversationClip ?? CLIP_IDLE);
-      selfFeed?.frame(dt, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0 || coworkerApproach?.turning === true || directedTurn !== null);
+      // the seat says whether it is a work desk (typing) or not (lounge, café, meeting table: hands at rest)
+      avatar.atWorkstation = currentSeatAnchor !== null && world.entities.has(parseSeatAnchorId(currentSeatAnchor).entityId)
+        ? world.get(parseSeatAnchorId(currentSeatAnchor).entityId).capabilities.seat?.workstation === true && parseSeatAnchorId(currentSeatAnchor).slotId === undefined
+        : undefined;
+      // S2 — this body's ride out (~10 a second), everybody else's drawn; S3 — their skids and sparks stepped
+      sendRidePose();
+      remoteRiders.update(Date.now());
+      updateCrash();
+      renderFallen();
+      updateRemoteFalls(env.lastTrafficTime);
+      updateLocalFall(env.lastTrafficTime);
+      updateLocalLift(env.lastTrafficTime);
+      updateTrafficObstacles(dt);
+      lastFrameDt = dt / 1000;
+      const fxShown = currentFloor === GROUND_FLOOR_ID;
+      if (driftFx.group.visible !== fxShown) { driftFx.group.visible = fxShown; if (!fxShown) driftFx.clear(); }
+      driftFx.update(dt / 1000);
+      // a sprint's skid goes out as a braking leg (peers replay it slowing down, the pose with it)
+      selfFeed?.setBraking(playerMode.active ? playerMode.state.braking : 0);
+      selfFeed?.frame(dt, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0 || coworkerApproach?.turning === true || directedTurn !== null || playerMode.rolling || playerMode.traversing || playerMode.onRoute);
       // PRESENCE'S zone: the Meeting Floor and the lift are inside the office (app/access presenceZoneAt),
       // so riding up is never read as leaving the building — and never as Away.
-      const zoneNow = presenceZoneAt({ x: bp.x, z: bp.z }, accessGeom, (p) => onFloor2(p) || inCabin(p));
+      const zoneNow = presenceZoneAt({ x: bp.x, z: bp.z }, accessGeom, onDetachedBuildingFloor);
       if (zoneNow !== accessState.zone) {
         accessState.zone = zoneNow;
         // PHASE 7E — one edge, for the one thing the host reads from it (app/interactions.ts).
@@ -5944,7 +6886,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // body it refuses — it opens for the people inside, so they can always leave.
       meetingDoorsMoved = false;
       if (currentFloor === FLOOR2_ID) {
-        if (meetingAccess.apply({ x: bp.x, z: bp.z })) floor2Router.invalidate();
+        if (meetingAccess.apply({ x: bp.x, z: bp.z })) plateRouters.get(FLOOR2_ID)!.invalidate();
         for (const md of meetingDoors) {
           const refused = meetingAccess.refuses(md.room.id) && !meetingAccess.inside(md.room.id, bp);
           if (refused) md.door.update(dt / 1000, DOOR_SUPPRESSED, NO_ROUTE, peerBodies.filter((b) => meetingAccess.inside(md.room.id, b.pos)));
@@ -6062,6 +7004,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // registered dynamic caster and is hidden before the static pass draws.
     updateLiftRiders();
     coworkersMoved = coworkers.update(dt / 1000);
+    // PARKOUR V3 — THE ZIPLINE TROLLEYS: one parked at the top while nobody rides, one per rider on the cable (this
+    // employee's and every peer's), each where its rider's hold has it — the handle the hands are on
+    placeZiplineTrolleys();
     // The shadow map is only redrawn when something that casts one has moved (Renderer.invalidateShadows).
     // Anything the avatar does counts: walking, sitting, and the doors/chairs its interactions drive. Plant
     // sway is deliberately NOT a trigger — a frozen leaf shadow is invisible and it would defeat the point.
@@ -6423,6 +7368,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       airborne: () => coworkers.airborneCount,
       /** DEV: drive a peer jump locally, without a second browser. Same entry point the relay uses. */
       jump: (email: string) => coworkers.jump(email),
+      /** DEV (PARKOUR V3): drive a peer onto a declared route, `ageMs` into it (a late joiner's view), without a second
+       *  browser — the same entry point the relay uses; and where that peer's trolley and hands are */
+      route: (email: string, id: string, dir: "a" | "b" = "a", ageMs = 0) => coworkers.route(email, id, dir, ageMs),
+      ziplines: () => coworkers.ziplineHolds(),
       moving: () => coworkers.moving,
       /** PHASE 6C — how many peers sit in a chair this world identified; `positions()` names the anchor. */
       seated: () => coworkers.getStats().seated,
@@ -6661,7 +7610,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     restoreGroundFloor: () => currentFloor === GROUND_FLOOR_ID || !!floorTransition?.restoreOn(GROUND_FLOOR_ID),
     labGroup: aiLab.group,
     /** dev: take the lift (verification harnesses — the Floor 2 window view of the Lab) */
-    elevator: (to?: Vo3dFloorId) => callElevator(to ?? otherFloor()),
+    elevator: (to?: Vo3dFloorId) => (to ? callElevator(to) : requestElevator()),
     setCameraMode,
     /** dev-only camera helper: frame an arbitrary world rect (used to look at the Lab) */
     focusRect: (rect: { x: number; z: number; w: number; d: number }, fill = 0.9) => focusOn(rect, fill),
@@ -6729,6 +7678,26 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       ids: { portal: CHAMPIONSHIP_ENTRANCE_ID, exit: CAVE_EXIT_ID, screen: CAVE_SCREEN_ID, room: CAVE_ID },
       canStand: (x: number, z: number) => playerStand({ x, z }),
     },
+    /** S4 — the traffic chain, live: is this employee reported, what the server said, where every car is */
+    traffic: {
+      state: trafficDebug,
+      crash: crashState,
+      accident: accidentState,
+      accidents: () => scooterAccidents,
+      holding: () => obstacleReporter.holding,
+      cars: () => trafficTimeline.loops.flatMap((path, li) => path.offsets.map((_, vi) => {
+        const o = { x: 0, z: 0, yaw: 0, heading: 0, speed: 0 };
+        trafficTimeline.pose(li, vi, env.lastTrafficTime, o);
+        return { key: vehicleKey(path.loop.id, vi), x: Math.round(o.x), z: Math.round(o.z), heading: +o.heading.toFixed(3), speed: Math.round(o.speed) };
+      })),
+      /** a point in car (loop, vi)'s lane, `along` ahead of its front bumper, now */
+      lanePoint: (loop: string, vi: number, along: number) => {
+        const li = trafficTimeline.loops.findIndex((p) => p.loop.id === loop);
+        const o = { x: 0, z: 0, yaw: 0, heading: 0, speed: 0 };
+        poseAtArc(trafficTimeline.loops[li], trafficTimeline.arc(li, vi, env.lastTrafficTime) + trafficTimeline.carLength(li, vi) / 2 + along, o);
+        return { x: o.x, z: o.z };
+      },
+    },
     player: {
       mode: playerMode, state: playerMode.state,
       /** the approved ground speeds, for the console and the movement QA rig */
@@ -6749,6 +7718,13 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       move: (dx: number, dz: number) => playerMode.body.move(dx, dz),
       position: () => ({ ...playerMode.body.pos }),
       teleport: (x: number, z: number) => { const ok = playerMode.body.placeNear({ x, z }); avatar.setPosition(playerMode.body.pos); playerMode.camera.snap(); return ok; },
+      /** PARKOUR V3 — the declared routes, the one in progress, and taking one from an end exactly as E would */
+      routes: {
+        list: () => LAB_ROUTES.map((r) => ({ id: r.id, kind: r.kind, a: r.path[0], b: r.path[r.path.length - 1] })), state: () => playerMode.routeState, enter: (id: string, dir: "a" | "b") => playerMode.enterRoute(id, dir),
+        /** the zipline: this rider's hold (trolley, handle) and where the hands are — the grip verification reads both */
+        hold: () => playerMode.ziplineHoldNow, hands: () => avatar.hands()?.map((v) => ({ x: v.x, y: v.y, z: v.z })) ?? null, grip: () => avatar.gripProfile(),
+        peerHands: (email: string) => coworkers.handsOf(email)?.map((v) => ({ x: v.x, y: v.y, z: v.z })) ?? null, trolleys: () => trolleys.filter((t) => t.group.visible).length,
+      },
       /** SHARED SCOOTERS — the QA rig: stations, ride area, mount/dismount and the live ride numbers */
       scooters: { stations: SCOOTER_STATIONS, state: scooterState, surface: () => playerMode.rideSurface, canRide: rideStand, mount: mountScooter, dismount: () => dismountScooter("qa"), ride: () => playerMode.rideState, riding: () => playerMode.riding, candidates: () => scooterCandidates().map((c) => c.id),
         hud: () => playerMode.scooterHudState,
@@ -6802,7 +7778,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       state: execState, doorState: execDoorState, startSit: startExecutiveSit, startApproach, startLoungeSit,
       chairs: EXECUTIVE_SEAT_IDS,
       seats: loungeSeats.map((s5, i) => ({ i, id: s5.id, slot: s5.label })).filter((r) => r.id.startsWith(EXECUTIVE_ROOM.id)),
-      approaches: { cabinetWest: CABINET_L_INTERACTION_ID, cabinetEast: CABINET_R_INTERACTION_ID, media: MEDIA_INTERACTION_ID, credenza: CREDENZA_INTERACTION_ID },
+      approaches: { cabinetWest: CABINET_L_INTERACTION_ID, cabinetEast: CABINET_R_INTERACTION_ID, media: MEDIA_INTERACTION_ID, credenza: CREDENZA_INTERACTION_ID, hrServices: HR_SERVICES_INTERACTION_ID },
       stand: () => { execSeat?.stand(); loungeSeat?.stand(); },
       get seat() { return execSeat; }, get lounge() { return loungeSeat; }, get door() { return execDoor; },
     },
@@ -6887,6 +7863,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     disposed = true;               // every async continuation above checks this before touching anything
     roomLocks.clear();
     cancelAnimationFrame(rafHandle); // the frame already asked for; the guard in loop() stops it re-arming
+    if (hiddenTimer !== null) { clearInterval(hiddenTimer); hiddenTimer = null; } // INTERACTION V2 — the hidden-tab clock
 
     // PHASE 5 FIRST, and before anything is torn down: the movement socket is V1's module-level singleton
     // and OUTLIVES this world, so this is the last chance to resolve a movement still in flight. Without
@@ -6897,6 +7874,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // PLAYER first: it owns window/document key + pointer-lock listeners and a document.body HUD, none of
     // which belong to the canvas and so none of which die with the context.
     playerMode.dispose();
+    // INTERACTION V2 — Office View's hover name is a document.body child too
+    hoverTip.remove();
     // The editor's panel is another document.body child, and the gizmo is scene-side.
     editPanel?.dispose();
     editPanel = null;
@@ -6908,6 +7887,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     crowd?.clear(); // Crowd's teardown is clear(): it disposes every member's clone, textures included
     R.removeDynamicCaster(coworkers.group);
     coworkers.dispose(); // bodies, mixers and nameplate canvases; the shared prototypes outlive the world
+    driftFx.dispose(); // S3 — the skid strips and the spark pool
     labWorkforce?.watch(false, false);
     labJobs?.reset(); labJobs?.dispose();
     labWorkforce?.reset();
@@ -7063,14 +8043,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (slotId === undefined) {
       const spec = e.capabilities.seat;
       if (!spec) return false;
-      const si = new SeatInteraction(avatar, stack, mirror.view(entityId), seatSpecFor(entityId), planner, () => params.walkSpeed);
+      const si = new SeatInteraction(avatar, stack, mirror.view(entityId), seatSpecFor(entityId), planner, () => travelSpeed());
       if (!si.restoreSeated()) return false;
       restoredSeat = si;
       return true;
     }
     const slot = e.capabilities.lounge?.slots.find((s2) => s2.id === slotId);
     if (!slot) return false;
-    const li = new LoungeSeatInteraction(avatar, stack, mirror.view(entityId), slotFor(entityId, slot), planner, () => params.walkSpeed);
+    const li = new LoungeSeatInteraction(avatar, stack, mirror.view(entityId), slotFor(entityId, slot), planner, () => travelSpeed());
     if (!li.restoreSeated()) return false;
     restoredLounge = li;
     return true;
@@ -7122,7 +8102,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // Unsubscribing drops any selection with it: the host that would have been told about it is gone.
       if (!handlers) selectedCoworker = null;
     },
-    peerJumped: (email, ageMs = 0) => coworkers.jump(email, ageMs),
+    peerJumped: (email, ageMs = 0, at, seq) => coworkers.jump(email, ageMs, at, seq),
+    peerParkour: (email, kind, ageMs = 0, at, seq, ms, rise, apex) => coworkers.parkour(email, kind, ageMs, at, seq, ms, rise, apex),
+    peerRoute: (email, route, dir, ageMs = 0, at, seq, p0 = 0) => coworkers.route(email, route, dir, ageMs, at, seq, p0),
+    peerRouteHalt: (email, end, at, seq) => coworkers.routeHalt(email, end, at, seq),
     setConversationPoses: (byEmail, self) => {
       hostConversationClips = byEmail;
       pushCoworkerClips();
@@ -7217,6 +8200,16 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       return () => devToolsListeners.delete(listener);
     },
     requestPointerLock: () => { if (playerMode.active) playerMode.requestPointerLock(); },
+    setInteractionMenuOpen: (open) => { interactionMenuOpen = open; playerMode.setMenuOpen(open); },
+    setServerClockOffset: (ms) => env.sharedTrafficClock.setOffset(ms),
+    // without the server there is no stream to trust: every remote rider comes off with it
+    setScooterAuthority: (a) => { scooterGate.setAuthority(a); if (!a) remoteRiders.clear(); },
+    applyScooterStates: (list, full) => applyScooterStatesWithRiders(list, full),
+    pushScooterPose: (p) => { remoteRiders.push(p, Date.now()); },
+    applyTrafficHolds,
+    setTrafficReporter: (report) => { trafficReport = report; },
+    applyScooterAccidents: (list) => { scooterAccidents = list; },
+    resumePointerLock: () => playerMode.resumePointerLock(),
     subscribeLockState: (listener) => {
       lockStateListeners.add(listener);
       listener(playerMode.pointerLocked, playerMode.unlockedLook);
@@ -7244,7 +8237,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       return () => floorListeners.delete(listener);
     },
     availableViewModes: () => FLOORS[currentFloor].viewModes,
-    useElevator: (to) => callElevator(to ?? otherFloor()),
+    // A CHOSEN FLOOR (the panel's answer) must be a real ride from here; omitted, it is "the other floor"
+    useElevator: (to) => (to !== undefined && !isElevatorDestination(currentFloor, to, FLOOR_ORDER) ? false : callElevator(to ?? otherFloor())),
     walkToMeetingRoom,
     teleportToMeetingRoom,
     meetingRoomOf,
@@ -7317,6 +8311,13 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // what is selected. Same one-way shape as every other host->world write on this interface.
       selectedCoworker = null;
     },
+    objectAnchor: (id) => {
+      if (!world.entities.has(id)) return null;
+      const p = world.get(id).transform.pos;
+      return anchorForWorldPoint(OBJECT_ANCHOR.set(p.x, 30, p.z));
+    },
+    runObjectAction: (id, key) => runObjectAction(id, key, selectedObject === id ? selectedObjectNear : undefined),
+    clearObjectSelection: () => { selectedObject = null; },
     approachCoworker,
   };
 }

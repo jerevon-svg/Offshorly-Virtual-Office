@@ -83,6 +83,8 @@ export interface ToucanDelegation {
   replyCount: number;
   /** A3 — flags under this delegation the owner has not opened yet. Absent on older payloads. */
   urgentCount?: number;
+  /** Away Mode V1 — the return time the owner explicitly gave ("7:00 PM"); null/absent otherwise. */
+  returnLabel?: string | null;
 }
 
 /** A3 — one requester-declared urgency flag as its OWNER sees it. Mirrors

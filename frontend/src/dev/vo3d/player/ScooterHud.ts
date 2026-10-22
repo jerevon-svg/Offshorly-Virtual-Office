@@ -6,6 +6,8 @@
 // UNITS. Not km/h: VO's movement is gameplay, not a vehicle simulation, so the readout is a normalized SPD
 // where a full road cruise reads 100 — boost 127, a path's share 85, off-road 50, reverse single figures.
 
+import { DRIFT } from "./ScooterDrift";
+
 /** SPD per world unit per second, for a given cruise speed (cruise reads 100) */
 export const spdPerUnit = (cruise: number): number => 100 / cruise;
 
@@ -24,6 +26,10 @@ export class ScooterHud {
   private readonly unit: HTMLSpanElement;
   private readonly tag: HTMLSpanElement;
   private readonly hint: HTMLSpanElement;
+  /** S3 — the drift's charge: a slim meter that fills while drifting, amber at the first tier, green at full */
+  private readonly drift: HTMLDivElement;
+  private readonly driftFill: HTMLDivElement;
+  private lastDrift = "";
   private readonly limits: ScooterHudLimits;
   /** the speed on the dial, eased so the needle moves like a needle */
   private shown = 0;
@@ -79,10 +85,40 @@ export class ScooterHud {
     this.hint.style.cssText = "font-size:10px;font-weight:600;opacity:0;transition:opacity 200ms ease;white-space:nowrap;";
     this.hintHtml = `<span style="display:inline-block;padding:1px 5px;margin-right:4px;border-radius:5px;background:#fff;border:1px solid rgba(24,20,34,0.14);box-shadow:0 1px 0 rgba(24,20,34,0.12)">Shift</span>boost`;
     this.hint.innerHTML = this.hintHtml;
-    side.append(this.tag, this.hint);
+    // THE DRIFT METER — always laid out (so the card never changes size), shown only while drifting
+    this.drift = document.createElement("div");
+    this.drift.setAttribute("data-testid", "scooter-drift");
+    this.drift.style.cssText = "display:flex;align-items:center;gap:6px;opacity:0;transition:opacity 180ms ease;";
+    const label = document.createElement("span");
+    label.style.cssText = "font-size:9px;font-weight:800;letter-spacing:0.1em;opacity:0.55;";
+    label.textContent = "DRIFT";
+    const track = document.createElement("div");
+    track.style.cssText = "position:relative;width:54px;height:4px;border-radius:2px;background:rgba(28,22,45,0.08);overflow:hidden;";
+    this.driftFill = document.createElement("div");
+    this.driftFill.setAttribute("data-testid", "scooter-drift-fill");
+    this.driftFill.style.cssText = "position:absolute;left:0;top:0;bottom:0;width:0%;border-radius:2px;background:#b9b2a6;transition:background 160ms ease,box-shadow 160ms ease;";
+    const tick = document.createElement("div");
+    tick.style.cssText = `position:absolute;left:${Math.round(DRIFT.tier1 * 100)}%;top:0;bottom:0;width:1px;background:rgba(28,22,45,0.18);`;
+    track.append(this.driftFill, tick);
+    this.drift.append(label, track);
+    side.append(this.tag, this.hint, this.drift);
     this.root.append(svg, read, side);
     parent.appendChild(this.root);
     this.update(0, false, 0);
+  }
+
+  /** S3 — the drift this frame: is one running, its charge (0…1) and its tier (0 charging, 1, 2 full) */
+  setDrift(active: boolean, charge: number, tier: 0 | 1 | 2): void {
+    const pct = Math.round(Math.max(0, Math.min(1, charge)) * 100);
+    const key = `${active ? 1 : 0}:${pct}:${tier}`;
+    if (key === this.lastDrift) return;
+    this.lastDrift = key;
+    this.drift.style.opacity = active ? "1" : "0";
+    this.drift.dataset.tier = String(tier);
+    this.driftFill.style.width = `${pct}%`;
+    this.driftFill.style.background = tier === 2 ? "#2f6b45" : tier === 1 ? "#e0a24a" : "#b9b2a6";
+    this.driftFill.style.boxShadow = tier === 2 ? "0 0 6px rgba(47,107,69,0.55)" : "none";
+    if (active) this.hint.style.opacity = "0";
   }
 
   /** a frame of the ride: its signed speed (world units/s, negative = reverse) and whether boost is driving it */

@@ -191,3 +191,35 @@ describe("useSelfDndPublication (the shared publisher)", () => {
     expect(lastFakeSocket!.emitted[1]).toEqual({ event: "dnd_set", payload: { isDnd: true } });
   });
 });
+
+describe("peer status relay (status_set / peer_status)", () => {
+  it("publishes the full effective status on mount and on each change, never on a same-status re-render", async () => {
+    const { useSelfStatusPublication } = await import("./dndClient");
+    const { rerender } = renderHook(({ s }) => useSelfStatusPublication(s), { initialProps: { s: "AVAILABLE" as const } as { s: "AVAILABLE" | "BUSY" } });
+    rerender({ s: "AVAILABLE" });
+    rerender({ s: "BUSY" });
+    expect(lastFakeSocket!.emitted.filter((e) => e.event === "status_set")).toEqual([
+      { event: "status_set", payload: { status: "AVAILABLE" } },
+      { event: "status_set", payload: { status: "BUSY" } },
+    ]);
+  });
+
+  it("exposes the server's peer_status snapshot, replacing (never merging) on each broadcast", async () => {
+    const { usePeerStatuses } = await import("./dndClient");
+    const { result } = renderHook(() => usePeerStatuses());
+    act(() => lastFakeSocket!.trigger("peer_status", { statuses: { "jerevon@offshorly.com": "BUSY", "louiejie@offshorly.com": "BREAK" } }));
+    expect(result.current.get("jerevon@offshorly.com")).toBe("BUSY");
+    act(() => lastFakeSocket!.trigger("peer_status", { statuses: { "jerevon@offshorly.com": "AVAILABLE" } }));   // Lui disconnected
+    expect(result.current.get("jerevon@offshorly.com")).toBe("AVAILABLE");
+    expect(result.current.has("louiejie@offshorly.com")).toBe(false);
+  });
+
+  it("re-asserts the last status on every (re)connect, alongside DND", async () => {
+    const { emitStatusSet, emitDndSet } = await import("./dndClient");
+    emitDndSet(true);
+    emitStatusSet("DND");
+    lastFakeSocket!.emitted = [];
+    lastFakeSocket!.trigger("connect");
+    expect(lastFakeSocket!.emitted).toEqual([{ event: "dnd_set", payload: { isDnd: true } }, { event: "status_set", payload: { status: "DND" } }]);
+  });
+});

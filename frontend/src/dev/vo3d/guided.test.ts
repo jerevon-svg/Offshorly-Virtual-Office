@@ -81,6 +81,30 @@ function player(stack: ControllerStack, guided: () => boolean) {
   return { av, pm, yieldAvatar, activate };
 }
 
+describe("PlayerMode while SEATED (an Interaction owns the body)", () => {
+  it("the mouse still turns the camera, nothing moves the body, and a refused look is dropped rather than banked", () => {
+    const stack = new ControllerStack();
+    let seated = true;
+    const { av, pm } = player(stack, () => seated);   // app/world: freeLook includes an engaged seat
+    pm.enter();
+    stack.acquire("Interaction");                     // the seat owns the body
+    av.setPosition({ x: 40, z: 12 });
+    const input = (pm as unknown as { input: { dx: number; dy: number } }).input;
+    const yaw = pm.camera.yaw;
+    input.dx = 200;
+    expect(pm.update(1 / 60)).toEqual({ x: 40, z: 12 });
+    expect(pm.camera.yaw, "looking around while seated").not.toBeCloseTo(yaw);
+    expect(stack.owner).toBe("Interaction");          // looking never stands the body up
+    // a look the camera may not take (a lift ride, a portal) is dropped, so nothing jumps when control returns
+    seated = false;
+    const held = pm.camera.yaw;
+    input.dx = 300; pm.update(1 / 60);
+    seated = true; pm.update(1 / 60);
+    expect(pm.camera.yaw).toBeCloseTo(held);
+    pm.dispose();
+  });
+});
+
 describe("PlayerMode during a guided journey", () => {
   it("enters without yielding the walk or taking the body", () => {
     const stack = new ControllerStack();

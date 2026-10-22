@@ -47,7 +47,17 @@ export const SCOOTER_JUMP = { takeoff: 110, gravity: 480 } as const;
 /** `cap` (0…1, default 1): the surface's share of the top speed (world/exteriorGround SURFACE_SPEED) — the
  *  deck eases down to it at `surfaceDrag`, never snaps */
 /** `airborne`: the wheels are off the ground — no drive, no brake, no surface drag, light steering */
-export type ScooterInput = { throttle: number; steer: number; boost: boolean; cap?: number; airborne?: boolean };
+/** `drift` (S3, player/ScooterDrift): the deck is drifting toward `dir` at `turnRate` rad/s — it turns that
+ *  way whatever the bars do, leans harder, and sheds a little speed. `surge`: a mini-boost's top speed, driven
+ *  toward hard while it lasts (never added to Shift's: the higher of the two is the top). */
+export type ScooterInput = {
+  throttle: number; steer: number; boost: boolean; cap?: number; airborne?: boolean;
+  drift?: { dir: -1 | 1; turnRate: number; lean: number; drag: number } | null;
+  surge?: number;
+};
+
+/** how hard a mini-boost drives the deck toward its speed, u/s² */
+const SURGE_ACCEL = 620;
 
 export class ScooterMotion {
   /** signed speed along the heading, u/s (negative = reversing) */
@@ -69,7 +79,8 @@ export class ScooterMotion {
     const throttle = Math.max(-1, Math.min(1, input.throttle));
     const target = Math.max(-1, Math.min(1, input.steer));
     this.steer += (target - this.steer) * Math.min(1, S.steerResponse * dt);
-    const top = input.boost ? S.boostSpeed : S.maxSpeed;
+    const surge = input.surge ?? 0;
+    const top = Math.max(input.boost ? S.boostSpeed : S.maxSpeed, surge);
     // the surface's own limit: below `top` (boost/cruise, handled exactly as before), shed at surfaceDrag
     const surfaceTop = top * Math.max(0.05, Math.min(1, input.cap ?? 1));
     if (input.airborne) {
@@ -92,6 +103,9 @@ export class ScooterMotion {
       this.speed = Math.abs(this.speed) <= d ? 0 : this.speed - Math.sign(this.speed) * d;
     }
     if (!input.airborne) {
+      // THE MINI-BOOST: forward toward its speed while it lasts, throttle or not (it was earned)
+      if (surge > 0 && this.speed > 0 && this.speed < surge) this.speed = Math.min(surge, this.speed + SURGE_ACCEL * dt);
+      if (input.drift) this.speed = Math.max(0, this.speed - input.drift.drag * (throttle > 0 ? 0.4 : 1) * dt);
       if (this.speed > top) this.speed = Math.max(top, this.speed - S.coast * dt);
       if (this.speed > surfaceTop) this.speed = Math.max(surfaceTop, this.speed - S.surfaceDrag * dt);
     }
@@ -99,9 +113,11 @@ export class ScooterMotion {
     const k = Math.min(1, Math.abs(this.speed) / S.maxSpeed);
     const rate = S.turnSlow + (S.turnFast - S.turnSlow) * k;
     const moving = Math.abs(this.speed) > 4 ? Math.sign(this.speed) : 1;
-    this.heading += this.steer * rate * (input.airborne ? S.airSteer : 1) * dt * moving * (0.45 + 0.55 * Math.min(1, Math.abs(this.speed) / 40));
-    // lean follows steer × speed, smoothed
-    const want = this.steer * S.maxLean * k;
+    // A DRIFT turns the deck its own way (player/ScooterDrift turnRate), whatever the bars do
+    if (input.drift && !input.airborne) this.heading += input.drift.dir * input.drift.turnRate * dt;
+    else this.heading += this.steer * rate * (input.airborne ? S.airSteer : 1) * dt * moving * (0.45 + 0.55 * Math.min(1, Math.abs(this.speed) / 40));
+    // lean follows steer × speed, smoothed — or the drift's harder lean into its turn
+    const want = input.drift ? input.drift.dir * input.drift.lean * k : this.steer * S.maxLean * k;
     this.lean += (want - this.lean) * Math.min(1, 7 * dt);
     const d = this.speed * dt;
     return { dx: Math.sin(this.heading) * d, dz: -Math.cos(this.heading) * d };

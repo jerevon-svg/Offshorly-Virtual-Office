@@ -62,7 +62,7 @@ describe("vo3d foley — footsteps are paced by ground covered, not by a clock",
   const walkFrame = PLAYER_WALK_SPEED / 60;
   const sprintFrame = PLAYER_SPRINT_SPEED / 60;
 
-  it("takes a step every STRIDE units, so cadence follows 70 and 100 without knowing either", () => {
+  it("takes a step every STRIDE units, so cadence follows 42 and 100 without knowing either", () => {
     const f = new Footsteps();
     let steps = 0;
     for (let i = 0; i < 60; i++) if (f.advance(walkFrame, false)) steps++;

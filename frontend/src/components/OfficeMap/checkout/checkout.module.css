@@ -455,6 +455,23 @@
 .allocationLine.warn {
   color: var(--vo-co-warn, rgba(240, 180, 90, 0.95));
 }
+/* The three figures wrap as whole items at narrow widths instead of breaking mid-figure. */
+.allocationLine {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  column-gap: 12px;
+  row-gap: 2px;
+}
+.allocationItem {
+  white-space: nowrap;
+}
+/* Muted one-line explanation under a summary grid (review + success). */
+.note {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--vo-co-ink-soft, rgba(240, 240, 240, 0.6));
+}
 .loadingHint {
   font-size: 11px;
   color: var(--vo-co-ink-soft, rgba(240, 240, 240, 0.5));

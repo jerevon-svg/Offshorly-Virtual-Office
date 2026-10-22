@@ -117,7 +117,7 @@ export function resolveWalk(
         path: local.map((p) => ({ x: p.x, z: p.y })),
         durationMs: active.durationMs,
         elapsedMs: Math.min(active.durationMs, Math.max(0, elapsed)),
-        ...(active.pacing === "linear" ? { pacing: "linear" as const } : {}),
+        ...(active.pacing === "linear" || active.pacing === "decel" ? { pacing: active.pacing } : {}),
       };
     }
   }
@@ -127,7 +127,7 @@ export function resolveWalk(
     durationMs: active.durationMs,
     elapsedMs: Math.min(active.durationMs, Math.max(0, elapsed)),
     // Only the one word that changes anything: absent and "eased" are the same replay.
-    ...(active.pacing === "linear" ? { pacing: "linear" as const } : {}),
+    ...(active.pacing === "linear" || active.pacing === "decel" ? { pacing: active.pacing } : {}),
   };
 }
 
@@ -184,8 +184,13 @@ export function applyLivePositions(
     // occupiedCentroidKeys: no walk in flight, state "sitting", a seat key) plus one of V2's: the mapping
     // knows the chair. A V1 sitter in a chair V2 cannot identify keeps the standing placement below.
     const anchor = !walk && peer.stable.state === "sitting" ? anchorForSeatKey(peer.stable.seatKey) : null;
+    const feet = walk ? peer.active?.feet : peer.stable.feet;
+    // PARKOUR V3 — a route in progress, aged on the server's clock (a late joiner picks it up part-way through)
+    const tr = peer.traversal;
+    const traversal = tr ? { routeId: tr.route, dir: tr.dir, p0: tr.p0, elapsedMs: Math.max(0, Date.now() + serverClockOffsetMs - tr.at), key: `${tr.at}:${tr.seq ?? 0}` } : undefined;
     return {
       ...coworker,
+      ...(traversal ? { traversal } : {}),
       // The conversion, in one place: their own box's halves, and nothing else.
       point: toCentre(peer.stable.pos, coworker.box),
       // V1's recorded arrival facing replaces the seat's own direction — they are not at the seat any
@@ -205,6 +210,8 @@ export function applyLivePositions(
       ...(peer.stable.localPos ? { localPoint: { x: peer.stable.localPos.x, z: peer.stable.localPos.y } } : {}),
       ...(walk ? { walk } : {}),
       ...(anchor ? { seat: anchor.id } : {}),
+      // PARKOUR V1 — the published feet height, straight through (the store already admitted only a sane number)
+      ...(feet !== undefined ? { feet } : {}),
     };
   });
 

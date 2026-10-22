@@ -1,1 +1,5 @@
 output/
+# local tool cache (vitest/vite run from here)
+node_modules/
+# employee eye crops for eye-box-fit / lid-leak tests: local-only, never published (those tests skip without them)
+human-base/fixtures/eye-box/

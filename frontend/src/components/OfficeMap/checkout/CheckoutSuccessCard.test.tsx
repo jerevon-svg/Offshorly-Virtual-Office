@@ -111,3 +111,33 @@ describe("CheckoutSuccessCard dismissal", () => {
     expect(screen.queryByText("You're checked out! 🎉")).toBeNull();
   });
 });
+
+describe("CheckoutSuccessCard figures", () => {
+  const summary = { sessionMinutes: 572, loggedMinutes: 480, unallocatedMinutes: 92, entryCount: 2 };
+  const rowValue = (label: string) => screen.getByText(label).nextElementSibling?.textContent ?? "";
+
+  it("shows the captured checked-in / sent / not-logged figures, restored from storage after a reload", () => {
+    // The resumed path: no entries in memory, a still-unknown live clock — only the stored result.
+    saveResult(EMPLOYEE_ID, workDate(), {
+      success: true,
+      submissionId: "s-sum",
+      submittedAt: new Date().toISOString(),
+      entriesCreated: 2,
+      checkoutSummary: summary,
+    });
+    render(<Harness />);
+    expect(rowValue("Checked in for")).toBe("9h 32m");
+    expect(rowValue("Sent to Zoho Projects")).toBe("8h 0m (2 entries)");
+    expect(rowValue("Not logged")).toBe("1h 32m");
+    expect(screen.getByText(/Checked-in time is as of your submission/)).toBeTruthy();
+  });
+
+  it("a result saved before the summary existed still renders, without claiming anything was sent", () => {
+    saveResult(EMPLOYEE_ID, workDate(), { success: true, submissionId: "legacy", submittedAt: new Date().toISOString() });
+    render(<Harness />);
+    expect(screen.getByText("You're checked out! 🎉")).toBeTruthy();
+    expect(screen.getByText("Checked in for")).toBeTruthy();
+    expect(screen.getByText("Logged")).toBeTruthy();
+    expect(screen.queryByText("Sent to Zoho Projects")).toBeNull();
+  });
+});

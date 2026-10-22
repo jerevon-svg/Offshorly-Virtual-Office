@@ -1,0 +1,105 @@
+/* The elevator's floor panel — the world menu's cream card family (components/OfficeMap/WorldActionMenu
+   .menu: surface, hairline, radius, shadow, entrance) in OFFSHORLY GREEN: the same five greens the checkout
+   (--vo-co-primary-*), Meetings, Chat and the Toucan panel use, declared once below. Its one bit of play is
+   keycaps that light up like a real car panel. Same 20/21 layers as the world menu, which it replaces in
+   the same moment (a call control is never also a person you clicked). */
+.backdrop { position: fixed; inset: 0; z-index: 20; pointer-events: none; }
+
+.card {
+  pointer-events: auto;
+  position: fixed;
+  z-index: 21;
+  box-sizing: border-box;
+  width: min(248px, calc(100vw - 16px));
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  border-radius: 18px;
+  box-shadow: 0 12px 32px rgba(18, 16, 28, 0.18), 0 2px 6px rgba(18, 16, 28, 0.08);
+  color: #241f30;
+  --fp-green: #2f6b45; /*        Offshorly primary */
+  --fp-green-hover: #275a3a;
+  --fp-green-deep: #1f4a2f;
+  --fp-green-light: #dcecdf;
+  --fp-green-light-2: #cde2d2;
+  animation: pickerIn 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.centred { left: 50%; top: 42%; transform: translate(-50%, -50%); animation-name: pickerInCentred; }
+@keyframes pickerIn { from { opacity: 0; transform: translateY(-4px) scale(0.98); } }
+@keyframes pickerInCentred { from { opacity: 0; transform: translate(-50%, calc(-50% - 4px)) scale(0.98); } }
+@media (prefers-reduced-motion: reduce) { .card { animation: none; } }
+
+.header { display: flex; align-items: center; gap: 10px; padding: 4px 4px 2px 6px; }
+.glyph {
+  flex: none; width: 28px; height: 28px; border-radius: 9px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  font-size: 8px; line-height: 1; color: var(--fp-green-light);
+  background: linear-gradient(160deg, var(--fp-green), var(--fp-green-deep));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+.heading { flex: 1; min-width: 0; }
+.title { font-size: 14px; font-weight: 800; letter-spacing: -0.01em; }
+.sub { font-size: 12px; color: rgba(36, 31, 48, 0.62); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.close {
+  flex: none; width: 26px; height: 26px; border: 0; border-radius: 50%;
+  background: transparent; color: rgba(36, 31, 48, 0.5); font-size: 18px; line-height: 1; cursor: pointer;
+}
+.close:hover { background: rgba(36, 31, 48, 0.06); color: #241f30; }
+
+.panel {
+  display: flex; flex-direction: column; gap: 2px; padding: 4px;
+  border-radius: 14px; background: rgba(47, 107, 69, 0.05);
+}
+.row {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 6px 10px 6px 6px; border: 0; border-radius: 11px;
+  background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
+  transition: background 120ms ease;
+}
+.row:hover:not(:disabled), .row:focus-visible { background: #fff; box-shadow: 0 1px 3px rgba(18, 16, 28, 0.08); outline: none; }
+.row:focus-visible { box-shadow: 0 0 0 2px rgba(47, 107, 69, 0.5); }
+.row:active:not(:disabled) { background: var(--fp-green-light); }
+
+.keycap {
+  flex: none; width: 34px; height: 34px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
+  color: var(--fp-green-deep);
+  background: radial-gradient(circle at 50% 30%, #ffffff, #f1f6f2);
+  box-shadow: inset 0 0 0 1.5px var(--fp-green-light-2), inset 0 -2px 0 rgba(31, 74, 47, 0.06), 0 1px 2px rgba(18, 16, 28, 0.12);
+  transition: box-shadow 140ms ease, color 140ms ease, background 140ms ease;
+}
+.row:hover:not(:disabled) .keycap, .row:focus-visible .keycap {
+  color: #fff;
+  background: radial-gradient(circle at 50% 30%, #3d8058, var(--fp-green));
+  box-shadow: inset 0 0 0 1.5px var(--fp-green-hover), inset 0 2px 0 rgba(255, 255, 255, 0.18), 0 0 0 3px rgba(47, 107, 69, 0.16);
+}
+.row:active:not(:disabled) .keycap { background: var(--fp-green-hover); }
+.name { flex: 1; min-width: 0; font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dir { flex: none; font-size: 9px; color: rgba(36, 31, 48, 0.38); }
+.row:hover:not(:disabled) .dir, .row:focus-visible .dir { color: var(--fp-green); }
+
+/* WHERE YOU ARE: the lit button, not pressable */
+.current { cursor: default; }
+.current { background: rgba(47, 107, 69, 0.07); }
+.current .keycap {
+  color: #fff;
+  background: radial-gradient(circle at 50% 30%, #3d8058, var(--fp-green-deep));
+  box-shadow: inset 0 0 0 1.5px var(--fp-green-deep), 0 0 0 3px var(--fp-green-light), 0 0 12px rgba(47, 107, 69, 0.35);
+}
+.current .name { color: var(--fp-green-deep); }
+.here {
+  flex: none; font-size: 10px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
+  padding: 3px 7px; border-radius: 999px; color: var(--fp-green-deep); background: var(--fp-green-light);
+}
+
+.hint { padding: 2px 6px 2px; font-size: 11px; color: rgba(36, 31, 48, 0.5); }
+.hint kbd {
+  display: inline-block; min-width: 14px; padding: 0 4px; margin-right: 2px; border-radius: 4px;
+  font: inherit; font-size: 10px; font-weight: 700; text-align: center;
+  background: rgba(36, 31, 48, 0.06); border: 1px solid rgba(36, 31, 48, 0.1);
+}
+@media (pointer: coarse) { .hint { display: none; } }

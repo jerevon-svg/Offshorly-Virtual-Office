@@ -18,7 +18,7 @@
 // floor above, which is the name that rides the movement wire beside the last in-frame point.
 import type { Vo3dViewMode } from "./viewMode";
 
-export type Vo3dFloorId = "floor-1" | "floor-2";
+export type Vo3dFloorId = "floor-1" | "floor-2" | "floor-3" | "floor-4";
 
 export interface Vo3dFloorSpec {
   id: Vo3dFloorId;
@@ -44,6 +44,9 @@ export const GROUND_FLOOR_ID: Vo3dFloorId = "floor-1";
 export const FLOORS: Record<Vo3dFloorId, Vo3dFloorSpec> = {
   "floor-1": { id: "floor-1", placeId: null, name: "Office", indicator: "01", viewModes: ["office", "explore", "player"], level: 0 },
   "floor-2": { id: "floor-2", placeId: "floor-2", name: "Meetings", indicator: "02", viewModes: ["office", "player"], level: 1 },
+  // EMPTY PLATES for now (rooms/plainFloor.ts): real, reachable storeys with nothing built on them yet
+  "floor-3": { id: "floor-3", placeId: "floor-3", name: "Compass University", indicator: "03", viewModes: ["office", "player"], level: 2 },
+  "floor-4": { id: "floor-4", placeId: "floor-4", name: "Gaming & Social Hub", indicator: "04", viewModes: ["office", "player"], level: 3 },
 };
 
 /** THE BUILDING'S FLOOR-TO-FLOOR HEIGHT, in world units — how far below an upper storey the ONE shared
@@ -64,7 +67,7 @@ export const STOREY_H = 96;
 export const exteriorDrop = (id: Vo3dFloorId, storey: number = STOREY_H): number => FLOORS[id].level * storey;
 
 /** Bottom to top. The elevator reads this to know what it can offer and in which direction it travels. */
-export const FLOOR_ORDER: readonly Vo3dFloorId[] = ["floor-1", "floor-2"];
+export const FLOOR_ORDER: readonly Vo3dFloorId[] = ["floor-1", "floor-2", "floor-3", "floor-4"];
 
 export const floorSpec = (id: Vo3dFloorId): Vo3dFloorSpec => FLOORS[id];
 
@@ -107,3 +110,47 @@ export function floorOfPlace(place?: string | null): Vo3dFloorId {
 export function coworkersOnFloor<T extends { place?: string }>(list: readonly T[], floor: Vo3dFloorId): T[] {
   return list.filter((c) => floorOfPlace(c.place) === floor);
 }
+
+// ============================= THE ELEVATOR'S FLOOR PANEL =======================================
+// Everything the floor selector shows is derived from the table above, so a floor added there appears on
+// the panel with no edit here. Generic over the id so a panel test can describe a four-storey building
+// while this one still has two.
+
+export type ElevatorDirection = "up" | "down";
+
+/** ONE BUTTON ON THE PANEL. The current floor stays on it — lit and not pressable, the way a real lift
+ *  shows where you are — rather than being removed. */
+export interface ElevatorFloorRow<Id extends string = Vo3dFloorId> {
+  id: Id;
+  indicator: string;
+  name: string;
+  current: boolean;
+  /** which way the car goes to reach it; null for the floor you are on */
+  direction: ElevatorDirection | null;
+}
+
+/** THE PANEL'S BUTTONS, TOP FLOOR FIRST — the way a lift panel reads. */
+export function elevatorFloorRows<Id extends string>(
+  current: Id,
+  order: readonly Id[],
+  floors: Readonly<Record<Id, { indicator: string; name: string }>>,
+): ElevatorFloorRow<Id>[] {
+  const here = order.indexOf(current);
+  return order
+    .map((id, i) => ({
+      id,
+      indicator: floors[id].indicator,
+      name: floors[id].name,
+      current: id === current,
+      direction: id === current ? null : i > here ? ("up" as const) : ("down" as const),
+    }))
+    .reverse();
+}
+
+/** DOES THE LIFT HAVE TO ASK? With one other floor there is only one answer, so the call stays the
+ *  one-click ride it has always been; the panel appears once a third floor is registered. */
+export const elevatorNeedsPicker = (order: readonly string[] = FLOOR_ORDER): boolean => order.length > 2;
+
+/** Is `to` a ride the lift can take from `from` — a registered floor, and not the one you are on? */
+export const isElevatorDestination = <Id extends string>(from: Id, to: Id, order: readonly Id[]): boolean =>
+  to !== from && order.includes(to);

@@ -16,6 +16,8 @@ import type { Vo3dCoworker } from "../app/coworkers";
 
 /** What a shipped package carries. The "legacy" case below re-stubs this without the answering clip. */
 let packagedClips = [CLIP_IDLE, CLIP_SIT, CLIP_SIT_ANSWER, CLIP_WALK];
+// these exercise the LEGACY prototype pipeline with "bon" as a stock character; HumanBase peers: Coworkers.human.test
+vi.mock("../avatar/humanBody", async (orig) => ({ ...(await orig<typeof import("../avatar/humanBody")>()), humanBodyFor: () => null }));
 vi.mock("../avatar/CastPrototypes", () => ({
   prototypeFor: (id: string) =>
     Promise.resolve({

@@ -76,10 +76,13 @@ from app.services.toucan.delegation import (
     DelegationClockRequest,
     clock_problem_text,
     display_name_from_email,
+    not_away_text,
     nothing_to_stop_text,
+    parse_return_command,
     parse_stop_delegation,
     replaced_text,
     resolve_clock_request,
+    returned_text,
     stopped_text,
 )
 from app.services.toucan.context import (
@@ -368,6 +371,7 @@ def _delegation_out(row, *, urgent_count: int = 0) -> ToucanDelegationOut:
         ended_reason=row.ended_reason,
         reply_count=row.reply_count or 0,
         urgent_count=urgent_count,
+        return_label=row.note,
     )
 
 
@@ -561,9 +565,20 @@ async def ask_toucan(
     # proposal that the confirm endpoint alone can execute.
     # A2.1 — "stop handling my messages" ends an active delegation IMMEDIATELY, with no
     # confirmation: stopping is the safe direction, and the owner is the bearer identity.
-    if parse_stop_delegation(body.question):
-        ended = await toucan_delegation_repo.end_delegation(db, owner_email=email, on_ended=emit_delegation_ended)
-        answer_text = stopped_text() if ended is not None else nothing_to_stop_text()
+    # Away Mode V1 (decision C) — "I'm back" is the same safe direction: it ends ANY active
+    # delegation of the caller's at once (timed, clock or until_return), reason "returned".
+    returning = parse_return_command(body.question)
+    if returning or parse_stop_delegation(body.question):
+        ended = await toucan_delegation_repo.end_delegation(
+            db,
+            owner_email=email,
+            reason=toucan_delegation_repo.ENDED_RETURNED if returning else toucan_delegation_repo.ENDED_CANCELLED,
+            on_ended=emit_delegation_ended,
+        )
+        if returning:
+            answer_text = returned_text() if ended is not None else not_away_text()
+        else:
+            answer_text = stopped_text() if ended is not None else nothing_to_stop_text()
         await toucan_repo.append_exchange(db, conversation=conversation, question=body.question, answer=answer_text)
         return ToucanAnswerOut(
             text=answer_text, intent="delegation_stop", supported=True, conversation_id=conversation.id
@@ -837,6 +852,7 @@ async def confirm_toucan_action(
                 ends_at=pending.action.ends_at,
                 end_condition=pending.action.end_condition,
                 scope=pending.action.scope,
+                return_label=pending.action.return_label,
                 on_ended=emit_delegation_ended,
             )
         except ValueError as err:

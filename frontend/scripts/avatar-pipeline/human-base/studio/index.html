@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HumanBase Studio</title>
+<style>
+  :root { --bg: #f4f5f7; --card: #ffffff; --ink: #1d2230; --muted: #667085; --line: #e3e6eb; --ok: #12805c; --warn: #b54708; --bad: #c01048; --accent: #3355ff; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #0f1115; --card: #171a21; --ink: #e8ebf1; --muted: #98a2b3; --line: #262b35; --accent: #7c93ff; } }
+  :root[data-theme="dark"] { --bg: #0f1115; --card: #171a21; --ink: #e8ebf1; --muted: #98a2b3; --line: #262b35; --accent: #7c93ff; }
+  * { box-sizing: border-box; } body { margin: 0; font: 15px/1.45 -apple-system, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--ink); }
+  header { padding: 18px 24px; border-bottom: 1px solid var(--line); display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 20px; } header p { margin: 0; color: var(--muted); }
+  main { display: grid; grid-template-columns: 300px 1fr; min-height: calc(100vh - 64px); }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  #people { border-right: 1px solid var(--line); padding: 12px; overflow: auto; max-height: calc(100vh - 64px); }
+  .person { display: flex; gap: 10px; align-items: center; padding: 8px; border-radius: 10px; cursor: pointer; border: 1px solid transparent; }
+  .person:hover { background: var(--card); } .person.sel { background: var(--card); border-color: var(--accent); }
+  .person img { width: 44px; height: 44px; object-fit: cover; border-radius: 8px; background: var(--line); }
+  .person b { display: block; text-transform: capitalize; } .person small { color: var(--muted); }
+  .upload { margin-top: 14px; padding: 12px; border: 1px dashed var(--line); border-radius: 10px; }
+  #detail { padding: 20px 24px; overflow: auto; max-height: calc(100vh - 64px); }
+  .steps { display: grid; gap: 12px; max-width: 980px; }
+  .step { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .step h3 { margin: 0 0 6px; font-size: 16px; display: flex; gap: 8px; align-items: center; }
+  .badge { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--line); color: var(--muted); font-weight: 600; }
+  .badge.ok { background: #d1fadf; color: var(--ok); } .badge.warn { background: #fef0c7; color: var(--warn); } .badge.bad { background: #fee4e2; color: var(--bad); }
+  .step p { margin: 4px 0 10px; color: var(--muted); }
+  button { font: inherit; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; } button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .shot { max-width: 100%; border-radius: 10px; border: 1px solid var(--line); margin-top: 8px; }
+  pre { background: #0d0f12; color: #cfd6e2; padding: 10px; border-radius: 8px; max-height: 220px; overflow: auto; font-size: 12px; white-space: pre-wrap; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; font-size: 14px; } .kv span:nth-child(odd) { color: var(--muted); }
+</style>
+</head>
+<body>
+<header><h1>HumanBase Studio</h1><p>approved illustration → identity analysis → Meshy head → automatic Offshorly correction → complete animated avatar → export</p></header>
+<main>
+  <aside id="people"></aside>
+  <section id="detail"><p style="color:var(--muted)">Pick a person on the left (or upload a new approved illustration).</p></section>
+</main>
+<script type="module">
+const $ = (s, e = document) => e.querySelector(s), api = (p, o) => fetch(p, o).then((r) => r.json()), file = (p) => `/file?path=${encodeURIComponent(p)}`;
+let sel = null, data = [];
+async function refresh() { data = await api("/api/people"); renderPeople(); if (sel) renderDetail(data.find((p) => p.id === sel)); }
+function renderPeople() { const el = $("#people"); el.innerHTML = "";
+  for (const p of data) { const d = document.createElement("div"); d.className = `person${p.id === sel ? " sel" : ""}`; const st = p.gate ? (p.gate.automatedPass ? "avatar built ✓" : "built — gate failed") : p.rawMeshy ? "Meshy head ready" : p.stage0 ? "traced" : "new";
+    d.innerHTML = `${p.illustration ? `<img src="${file(p.illustration)}" alt="">` : `<img alt="">`}<div><b>${p.id}</b><small>${st}${p.frozen ? " · approved (frozen)" : ""}</small></div>`; d.onclick = () => { sel = p.id; refresh(); }; el.append(d); }
+  const up = document.createElement("div"); up.className = "upload"; up.innerHTML = `<b>Upload an approved illustration</b><p style="margin:6px 0;color:var(--muted);font-size:13px">PNG of the approved Offshorly illustration (head + shoulders).</p><input id="upname" placeholder="first name" style="width:100%;margin-bottom:6px;padding:6px"><select id="uphair" style="width:100%;margin-bottom:6px;padding:6px"><option value="natural">hair: natural / short</option><option value="chin">hair: chin length</option><option value="shoulder">hair: shoulder length</option><option value="upperBack">hair: long (upper back)</option></select><select id="upbody" style="width:100%;margin-bottom:6px;padding:6px"><option value="standard">body: standard</option><option value="feminine">body: feminine</option></select><select id="upkind" style="width:100%;margin-bottom:6px;padding:6px"><option value="illustration">upload: approved illustration</option><option value="photo">upload: raw photo (→ illustration, paid, needs approval)</option></select><div id="upphoto" hidden><input id="upemail" placeholder="the person's VO email (their account)" style="width:100%;margin-bottom:6px;padding:6px"><input id="upattest" placeholder="your name — I confirm this person consented" style="width:100%;margin-bottom:6px;padding:6px"></div><input id="upfile" type="file" accept="image/png,image/jpeg"><div class="row" style="margin-top:8px"><button id="upgo">Upload</button></div>`; el.append(up);
+  $("#upkind").onchange = () => { $("#upphoto").hidden = $("#upkind").value !== "photo"; };
+  $("#upgo").onclick = async () => { const photo = $("#upkind").value === "photo", n = $("#upname").value.trim(), f = $("#upfile").files[0], em = $("#upemail").value.trim(), at = $("#upattest").value.trim();
+    if (!f || (!photo && !n)) return alert("name and file please"); if (photo && (!em || !at)) return alert("a raw photo needs the person's VO email and your name confirming they consented");
+    const r = await fetch(`/api/upload?name=${encodeURIComponent(n)}&hair=${$("#uphair").value}&body=${$("#upbody").value}&kind=${$("#upkind").value}${photo ? `&email=${encodeURIComponent(em)}&attest=${encodeURIComponent(at)}` : ""}`, { method: "POST", body: f }).then((x) => x.json());
+    if (r.error) return alert(r.error); sel = r.who ?? n.toLowerCase(); refresh(); }; }
+const badge = (ok, txt) => `<span class="badge ${ok === true ? "ok" : ok === false ? "bad" : ok === "warn" ? "warn" : ""}">${txt}</span>`;
+function lastJob(p, step) { return [...p.jobs].reverse().find((j) => j.step === step); }
+async function run(step, extra = {}) { const r = await fetch("/api/run", { method: "POST", body: JSON.stringify({ who: sel, step, ...extra }) }).then((x) => x.json());
+  if (r.needsApproval) { if (!confirm(`New Meshy generation for ${sel}\n\nEstimated cost: ${r.estimate}${r.source ? `\nFrom: ${r.source}` : ""}\n\nThis spends Meshy credits. Approve?`)) return; const by = (prompt("Your name (recorded as the approver):") ?? "").trim(); if (!by) return alert("a paid step needs a named approver"); return run(step, { approveCredits: true, approvedBy: by }); }
+  if (r.error) alert(r.error); if (r.reused) alert(`${r.note}`); refresh(); }
+function jobView(p, step) { const j = lastJob(p, step); if (!j) return ""; return `<div class="row"><span class="badge ${j.status === "done" ? "ok" : j.status === "running" ? "warn" : "bad"}">${j.status}</span><small style="color:var(--muted)">${new Date(j.startedAt).toLocaleTimeString()}</small><button data-log="${j.id}">log</button></div><pre id="log-${j.id}" hidden></pre>`; }
+function renderDetail(p) { if (!p) return; const busy = p.jobs.some((j) => j.status === "running"), g = p.gate, prev = p.candidate ? `http://localhost:5173/virtual-office/human-base-lineup.html?humanbase=1&ids=bon,${p.id}&candidate=${p.id}:${p.candidate}` : null;
+  const pl = p.pipeline, plOk = !pl ? "" : pl.status === "complete" ? true : /^(failed|blocked|stuck)/.test(pl.status) ? false : "warn";
+  $("#detail").innerHTML = `<div class="steps">
+  <div class="step"><h3>0 · Upload → avatar pipeline ${badge(plOk, pl ? pl.status : "not run")}</h3>
+    <p>Runs every stage in order on its own, stops before any PAID step until you approve it, and stops fail-closed on any failure.${p.simulated?.length ? ` <b>SIMULATED: ${p.simulated.join(", ")}</b> — fixtures stand in for paid generations; this candidate can never be signed off or promoted.` : ""}</p>
+    ${p.photo ? `<img class="shot" style="max-width:160px" src="${file(p.photo)}" title="raw photo">` : ""}<p style="color:var(--muted)">${pl?.plan ? `next: ${pl.plan.stage ?? "—"} · ${pl.plan.action} — ${pl.plan.reason}` : ""}</p>${pl?.reason ? `<p><b>Waiting because:</b> ${pl.reason}</p>` : ""}${pl?.error ? `<p style="color:var(--bad,#b3261e)"><b>Stopped:</b> ${pl.error}</p>` : ""}${pl?.evidence?.logTail ? `<details><summary>evidence</summary><pre style="white-space:pre-wrap;font-size:11px">${pl.evidence.logTail.replace(/</g, "&lt;")}</pre></details>` : ""}<pre id="preflight" hidden style="white-space:pre-wrap;font-size:12px"></pre>
+    <div class="row"><button data-pipe="preflight">Preflight (real run?)</button><button data-pipe="run">Run all (stops before paid steps)</button>${pl && /^awaiting-approval:/.test(pl.status) ? `<button data-pipe="approve">Approve ${pl.status.split(":")[1]} (paid) &amp; continue</button>` : ""}<input id="mockfrom" placeholder="test: simulate paid steps with fixtures of…" style="padding:6px"><button data-pipe="mock">Run with SIMULATED paid steps</button></div></div>
+  <div class="step"><h3>1 · Reference ${badge(!!p.illustration, p.illustration ? "ready" : "missing")}</h3><p>The approved Offshorly illustration defines who the person is.</p>${p.illustration ? `<img class="shot" style="max-width:240px" src="${file(p.illustration)}">` : ""}</div>
+  <div class="step"><h3>2 · Identity analysis ${badge(p.stage0 || "warn", p.stage0 ? "traced" : "not traced")}</h3><p>Stage 0 traces the face outline (hair is never treated as skin), eyes, nose, mouth and turns them into Offshorly targets.</p><div class="row"><button ${busy ? "disabled" : ""} data-run="identity">Show the trace</button></div>${jobView(p, "identity")}${lastJob(p, "identity")?.status === "done" ? `<img class="shot" src="${file(`scripts/avatar-pipeline/output/human-base/studio/${p.id}-trace.png`)}&t=${Date.now()}">` : ""}</div>
+  <div class="step"><h3>3 · Meshy 3D head ${badge(!!p.rawMeshy || "warn", p.rawMeshy ? "existing head — 0 credits" : "none yet")}</h3><p>${p.rawMeshy ? "This person already has a Meshy head; it is reused (no credits)." : "A new Meshy head costs about 30 credits. It is only submitted after you approve it."}</p><div class="row"><button ${busy ? "disabled" : ""} data-run="meshy">${p.rawMeshy ? "Reuse existing head" : "Generate (asks for approval)"}</button></div>${jobView(p, "meshy")}</div>
+  <div class="step"><h3>4 · Build the avatar ${g ? badge(g.automatedPass, g.automatedPass ? "automated gate PASS" : `gate FAIL: ${g.failed.join(", ")}`) : badge(null, "not built")}</h3><p>Offshorly style (chibify) → automatic identity correction from the trace (face length + face widths, skull locked) → hair, accessories → optimise → fail-closed gate on the real HumanBase body.</p>
+    <div class="row"><button class="primary" ${busy || !p.recipe || p.frozen ? "disabled" : ""} data-run="build">Build (≈ 6–10 min)</button>${p.frozen ? "<small>approved five are frozen — never rebuilt here</small>" : !p.recipe ? "<small>needs a recipe (hair, accessories) in employees.json</small>" : ""}</div>${jobView(p, "build")}
+    ${g ? `<div class="kv" style="margin-top:8px"><span>sign-off still needed</span><span>${g.signoff?.join(", ") || "—"}</span><span>head mount</span><span>${g.mount ? `scale ${g.mount.scale}` : "—"}</span><span>correction</span><span>${g.correction?.length?.apply ? `face length ×${g.correction.length.mul}` : "length unchanged"} · ${(g.correction?.plan ?? []).filter((l) => l[0] !== "eye").map((l) => `${l[0]} ×${l[1]}`).join(", ") || "widths unchanged"}</span></div>` : ""}</div>
+  <div class="step"><h3>5 · Preview the animated avatar ${badge(!!prev || null, prev ? "ready" : "build first")}</h3><p>The candidate on the production HumanBase body, next to Bon for scale. Switch idle / walk / run / sit on the page.</p><div class="row">${prev ? `<a href="${prev}&mode=idle" target="_blank"><button>Open preview (idle)</button></a><a href="${prev}&mode=walk" target="_blank"><button>Walk</button></a><a href="${prev}&view=faces" target="_blank"><button>Faces</button></a><button ${busy ? "disabled" : ""} data-run="sheet">Make review sheet</button>` : ""}</div>${jobView(p, "sheet")}${p.sheet ? `<img class="shot" src="${file(p.sheet)}&t=${Date.now()}">` : ""}</div>
+  <div class="step"><h3>6 · Export ${badge(p.exported || null, p.exported ? "exported" : "not yet")}</h3><p>Packages the gated head, its gate report + validated mount, the trace and the review sheet into output/human-base/exports/${p.id}/. Never touches production.</p><div class="row"><button ${busy || !g ? "disabled" : ""} data-run="export">Export</button></div>${jobView(p, "export")}</div>
+  </div>`;
+  for (const b of $("#detail").querySelectorAll("[data-pipe]")) b.onclick = async () => { const k = b.dataset.pipe, st = p.pipeline?.status ?? "", body = { who: p.id };
+    if (k === "preflight") { const r = await fetch(`/api/preflight?who=${encodeURIComponent(p.id)}`).then((x) => x.json()); const pre = $("#preflight"); pre.hidden = false;
+      pre.textContent = r.error ?? `${r.ready ? "READY for one real run" : "NOT READY"}\n` + r.checks.map((c) => `${c.ok ? "✓" : c.critical ? "✗" : "·"} ${c.id} — ${c.detail}`).join("\n"); return; }
+    if (k === "approve") { const stage = st.split(":")[1]; if (!confirm(`Approve the PAID ${stage} step for ${p.id}? (${stage === "meshy" ? "≈30 Meshy credits" : "one image generation"})`)) return;
+      const by = prompt("Your name — recorded as the approver of this paid step", localStorage.getItem("hbApprover") ?? ""); if (!by?.trim()) return; localStorage.setItem("hbApprover", by.trim());
+      body.approve = { [stage]: true }; body.approvedBy = by.trim();
+      if (/retry_cap|one paid attempt/.test(p.pipeline?.reason ?? "") && confirm(`${stage} already had its one paid attempt on this input. Approve ONE reroll (a new paid attempt)?`)) body.allowReroll = { [stage]: true }; }
+    if (k === "mock") { const m = $("#mockfrom").value.trim(); if (!m) return alert("name the fixture person whose illustration + Meshy head stand in (labelled SIMULATED, never promotable)"); body.mock = { illustrate: m, meshy: m }; }
+    const r = await fetch("/api/pipeline", { method: "POST", body: JSON.stringify(body) }).then((x) => x.json()); if (r.error) alert(r.error); refresh(); };
+  for (const b of document.querySelectorAll("[data-run]")) b.onclick = () => run(b.dataset.run);
+  for (const b of document.querySelectorAll("[data-log]")) b.onclick = async () => { const pre = $(`#log-${b.dataset.log}`); pre.hidden = !pre.hidden; if (!pre.hidden) pre.textContent = await fetch(`/api/log?id=${b.dataset.log}`).then((r) => r.text()); }; }
+refresh(); setInterval(() => { if (data.some((p) => p.jobs.some((j) => j.status === "running"))) refresh(); }, 4000);
+</script>
+</body>
+</html>

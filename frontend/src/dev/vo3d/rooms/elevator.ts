@@ -56,6 +56,11 @@ export const RIDE = {
   turnMs: 500,
   /** long enough that the read-out's step is a beat you watch rather than one you catch */
   travelMs: 3200,
+  /** EACH FURTHER FLOOR a journey passes adds one beat of the read-out turning over: 01 → 04 is 3200 +
+   *  2 x 1300 = 5.8 s — plainly longer than a one-floor ride, never a wait (interact/FloorTransition ridePlan) */
+  floorMs: 1300,
+  /** how long the read-out takes to turn over from one number to the next */
+  rollMs: 280,
   settleMs: 760,
   walkSpeed: 44,
   frameMs: 450,
@@ -231,6 +236,19 @@ export function clearsElevator(spec: ElevatorSpec, p: Vec2, radius: number): boo
     if (Math.hypot(p.x - nx, p.z - nz) < radius) return false;
   }
   return true;
+}
+
+/** DOES A BODY OF `radius` CENTRED ON `p` KEEP CLEAR OF THE WHOLE ENTRANCE — walls, doorway and the bay
+ *  behind them? This is the entrance with its DOORS SHUT, which is what it is whenever no ride is running:
+ *  one solid box. A plate's stand test uses this, not `clearsElevator`, because the walls alone leave the
+ *  doorway open and a body could walk through the closed leaves into the bay. During a ride the world asks
+ *  `vestibuleStandTest` first (app/world.ts vestibuleOf), so the ride still walks in and out. Downstairs the
+ *  shaft REGION does the same job (elevatorRegions); this is the same rule for a plate off V1's lattice. */
+export function clearsClosedElevator(spec: ElevatorSpec, p: Vec2, radius: number): boolean {
+  const o = spec.outer;
+  const nx = Math.max(o.x, Math.min(p.x, o.x + o.w));
+  const nz = Math.max(o.z, Math.min(p.z, o.z + o.d));
+  return Math.hypot(p.x - nx, p.z - nz) >= radius;
 }
 
 /** THE CALL CONTROL, as an ordinary `approach` entity. */

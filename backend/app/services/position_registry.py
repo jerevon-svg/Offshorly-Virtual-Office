@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -55,6 +57,10 @@ class StableState:
     # neither gains a column nor changes a value.
     local_x: float | None = None
     local_y: float | None = None
+    # PARKOUR V1 — how high the feet rest (on a furniture top), when a V2 client published it. Ephemeral like
+    # `local_*`: in memory and on the wire only, never persisted. Receivers honour it only where it matches a
+    # real standable top at the position (dev/vo3d/world/standables) — it can never place anyone anywhere.
+    feet: float | None = None
 
 
 @dataclass
@@ -74,6 +80,8 @@ class ActiveMovement:
     # one. `origin`/`path` above stay V1's, so a V1 peer replays exactly the walk it always did.
     local_origin: dict[str, float] | None = None
     local_path: list[dict[str, float]] | None = None
+    # PARKOUR V1 — the highest the feet stand during this walk (a furniture top), when published. See StableState.
+    feet: float | None = None
     # "eased" | "linear" | None (== eased). How peers replay it — see socket.py's _PACINGS. Not
     # persisted: an in-flight movement never is.
     pacing: str | None = None
@@ -94,6 +102,27 @@ class PositionRegistry:
     def __init__(self) -> None:
         self._revision_by_email: dict[str, int] = {}
         self._entries: dict[str, PositionEntry] = {}
+        # PARKOUR V3 — the declared ROUTE (a ladder, a zipline) each employee is on right now: the validated relay
+        # (route id, way, how far along it started, server start time, the server's own duration, the sender's seq)
+        # and when it ends. In memory only, like everything here that is not a stable position; it lets a late
+        # joiner's snapshot put a rider where the route has them NOW. Cleared by a halt, replaced by the next route.
+        self._traversals: dict[str, dict[str, Any]] = {}
+
+    # -- PARKOUR V3: routes in progress ------------------------------------------------------------
+    def set_traversal(self, email: str, traversal: dict[str, Any], ends_at: int) -> None:
+        self._traversals[email] = {**traversal, "_ends": ends_at}
+
+    def traversal(self, email: str, now_ms: int) -> dict[str, Any] | None:
+        t = self._traversals.get(email)
+        if t is None:
+            return None
+        if now_ms >= t["_ends"]:
+            del self._traversals[email]
+            return None
+        return {k: v for k, v in t.items() if k != "_ends"}
+
+    def clear_traversal(self, email: str) -> None:
+        self._traversals.pop(email, None)
 
     # -- revisions ---------------------------------------------------------------------------
     def next_revision(self, email: str) -> int:
@@ -115,6 +144,7 @@ class PositionRegistry:
         pacing: str | None = None,
         local_origin: dict[str, float] | None = None,
         local_path: list[dict[str, float]] | None = None,
+        feet: float | None = None,
     ) -> int:
         """Store the new active movement (superseding any prior one) and fold the
         walking-supersedes-sitting transition into the same revision bump: stable.state becomes
@@ -150,6 +180,7 @@ class PositionRegistry:
             pacing=pacing,
             local_origin=local_origin,
             local_path=local_path,
+            feet=feet,
         )
         return rev
 
@@ -166,6 +197,7 @@ class PositionRegistry:
         now_ms: int,
         yaw: float | None = None,
         local_at: dict[str, float] | None = None,
+        feet: float | None = None,
     ) -> StableState | None:
         """Accept only if there is an active movement for `email` whose movementId matches.
         Returns the new StableState on acceptance, or None when the arrival is stale/reordered
@@ -186,6 +218,7 @@ class PositionRegistry:
             yaw=yaw,
             local_x=local_at["x"] if local_at else None,
             local_y=local_at["y"] if local_at else None,
+            feet=feet,
         )
         entry.stable = stable
         entry.active = None
@@ -243,7 +276,7 @@ class PositionRegistry:
                 return email
         return None
 
-    def snapshot(self, own_email: str | None = None) -> list[dict[str, Any]]:
+    def snapshot(self, own_email: str | None = None, now_ms: int | None = None) -> list[dict[str, Any]]:
         """Wire shape for `positions_snapshot`. Stable-ordered by email for deterministic tests.
         Only emits entries that have stable state (every active movement always has an
         accompanying stable per `start()`, so this is every employee this process has ever seen
@@ -255,6 +288,7 @@ class PositionRegistry:
         null so self never replays/fast-forwards its own in-flight movement as a ghost (the
         self-echo bug). Every OTHER entry is unchanged, including its `active`."""
         own = own_email.strip().lower() if isinstance(own_email, str) else None
+        now = now_ms if now_ms is not None else int(time.time() * 1000)
         entries: list[dict[str, Any]] = []
         for email in sorted(self._entries):
             entry = self._entries[email]
@@ -274,6 +308,7 @@ class PositionRegistry:
                     "durationMs": entry.active.duration_ms,
                     "startedAt": entry.active.started_at,
                     "pacing": entry.active.pacing,
+                    **({"feet": entry.active.feet} if entry.active.feet is not None else {}),
                 }
             entries.append(
                 {
@@ -287,7 +322,10 @@ class PositionRegistry:
                     **({"localAt": {"x": stable.local_x, "y": stable.local_y}} if stable.local_x is not None and stable.local_y is not None else {}),
                     "updatedAt": stable.updated_at,
                     "yaw": stable.yaw,
+                    **({"feet": stable.feet} if stable.feet is not None else {}),
                     "active": active_wire,
+                    # PARKOUR V3 — a route in progress, for everybody but its own rider
+                    **({"traversal": tr} if not is_self and (tr := self.traversal(email, now)) is not None else {}),
                 }
             )
         return entries
@@ -330,6 +368,7 @@ class PositionRegistry:
         singleton registries between tests (e.g. spatial_sessions.reset())."""
         self._revision_by_email.clear()
         self._entries.clear()
+        self._traversals.clear()
 
 
 def _to_epoch_ms(value: Any) -> int:

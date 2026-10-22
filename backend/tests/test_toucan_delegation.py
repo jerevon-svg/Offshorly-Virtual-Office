@@ -397,14 +397,15 @@ async def test_the_pure_delegation_module_owns_no_storage_and_reads_no_text():
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             root = (node.names[0].name if isinstance(node, ast.Import) else node.module or "").split(".")[0]
             assert root in {"re", "dataclasses", "__future__", "datetime", "zoneinfo"}, root
-    # The reply templates take an OWNER EMAIL and nothing else — there is no parameter through
-    # which a message body could reach the wording.
+    # The reply templates take an OWNER EMAIL and, since Away Mode V1, the return time the OWNER
+    # explicitly gave (stored on their own delegation row) — nothing else. There is still no
+    # parameter through which a message body could reach the wording.
     import inspect
 
     for fn in (words.first_reply_text, words.follow_up_reply_text):
-        assert list(inspect.signature(fn).parameters) == ["owner_email"]
+        assert list(inspect.signature(fn).parameters) == ["owner_email", "return_label"]
     for fn in (words.combined_first_reply_text, words.combined_follow_up_reply_text):
-        assert list(inspect.signature(fn).parameters) == ["owner_emails"]
+        assert list(inspect.signature(fn).parameters) == ["owner_emails", "return_label"]
 
 
 # --- A2.2: combined wording (pure) -------------------------------------------------------------------

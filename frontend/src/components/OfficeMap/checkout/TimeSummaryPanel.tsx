@@ -14,9 +14,13 @@ function formatClock(ms: number): string {
   return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-// Read-only summary: Time in / Break time / Worked time / Checkout time.
+// Read-only summary: Time in / [Break time] / Checked in for / Checkout time.
 // Checkout time ticks live (current time) until frozenCheckoutAtMs is set
 // (i.e. after final submit), then it freezes at that stamp.
+//
+// "Checked in for", not "Worked time": being checked in is not the same as productive work. Break time
+// has no entry point today, so the row is shown only when a restored draft actually carries a break —
+// a permanent "0h 0m" would imply breaks were tracked and none were taken.
 export function TimeSummaryPanel({ timeInMs, breakMinutes, workedLabel, frozenCheckoutAtMs }: Props) {
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -33,10 +37,14 @@ export function TimeSummaryPanel({ timeInMs, breakMinutes, workedLabel, frozenCh
       <div className={styles.summaryLabel}>Time in</div>
       <div className={styles.summaryValue}>{timeInMs !== null ? formatClock(timeInMs) : "—"}</div>
 
-      <div className={styles.summaryLabel}>Break time</div>
-      <div className={styles.summaryValue}>{formatDuration(breakMinutes)}</div>
+      {breakMinutes > 0 && (
+        <>
+          <div className={styles.summaryLabel}>Break time</div>
+          <div className={styles.summaryValue}>{formatDuration(breakMinutes)}</div>
+        </>
+      )}
 
-      <div className={styles.summaryLabel}>Worked time</div>
+      <div className={styles.summaryLabel}>Checked in for</div>
       <div className={styles.summaryValue}>{workedLabel}</div>
 
       <div className={styles.summaryLabel}>Checkout time</div>

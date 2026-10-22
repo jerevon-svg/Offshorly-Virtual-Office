@@ -25,7 +25,7 @@ describe("app/world.ts — an abandoned lift trip does not survive PLAYER taking
 describe("app/world.ts — Phase 3 wiring", () => {
   it("a walk-up approach is PUBLISHED like any routed walk (the leader no longer looks frozen elsewhere)", () => {
     const body = src.slice(src.indexOf("function startApproach("), src.indexOf("function startLoungeSit("));
-    expect(body).toContain("if (navCtl.setPath(r.path)) selfFeed?.planned(origin, r.path, plannedDurationMs(origin, r.path, navCtl.speed), guidedPacing());");
+    expect(body).toContain("if (navCtl.setPath(r.path)) selfFeed?.planned(origin, r.path, plannedDurationMs(origin, r.path, syncTravelSpeed()), guidedPacing());");
   });
 
   it("the old leader-held lift is gone: the party's barrier is the server's ride leg", () => {

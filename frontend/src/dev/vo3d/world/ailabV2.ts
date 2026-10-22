@@ -26,6 +26,9 @@ import {
 } from "./ailab";
 import { v3, type TLink, type TNode, type TraversalGraph, type V3 } from "./monkeyTraversal";
 import { STATIONS, stationNodeId, stationSolids, stationTemplate, stationWork } from "./labStations";
+import { standableFromCircle, standableFromPath, standableFromPolygon, type Standable } from "./standables";
+import { circleSolid, clearOfSolids, rectSolid, segmentSolid, type BodyBand, type HeightSolid } from "./heightSolids";
+import type { RoutePoint, TraversalRoute } from "./traversalRoutes";
 
 export { DECK_Y, WALL_H, WALL_T };
 /** THE FLOOR THE LAB STANDS ON, in world y: the exterior ground model's Lab-interior surface (world/exteriorGround
@@ -479,3 +482,172 @@ export function buildLabV2Graph(): TraversalGraph {
 /** non-monkey anchors the orchestration layer will use (the Toucan lands; it does not walk the graph) */
 export const LAB2_ANCHORS = { TOUCAN_PERCH, JOB_BOARD: v3(JOB_BOARD.x, JOB_BOARD.y, JOB_BOARD.z), ARTIFACT_WALL: v3(ARTIFACT.x, 8, ARTIFACT.z), BRIEFING_CENTRE: v3(BRIEFING.x, 0, BRIEFING.z) } as const;
 export const LAB2_CENTRE: Vec2 = { x: LAB2_OUTER.x + LAB2_OUTER.w / 2, z: LAB2_OUTER.z + LAB2_OUTER.d / 2 };
+
+// ============================== PARKOUR V3: THE TREEHOUSE, WALKABLE BY PEOPLE ===================================
+// Everything a PERSON stands on, walks under, is stopped by, climbs and rides in the Lab, declared from the same
+// numbers the treehouse is built from (build/labTreehouse reads the rail openings and the routes from here), in
+// absolute world y (the Lab floor is LAB2_FLOOR_Y). Collision is height-aware (world/heightSolids): a post under a
+// deck stops a body on the floor, not one on the deck; a deck's slab is walked under and stood on, never passed
+// through; a rail stops a body on its deck; the trunk stops everybody at every height.
+const FY = LAB2_FLOOR_Y;
+
+/** the rail openings: where a deck edge is open (the prow, the routes off L1, the jump-stump gap; the stair head, the
+ *  pole ledge, the residence front and the zipline gate on L2). build/labTreehouse leaves exactly these open. */
+export const L1_RAIL_OPENINGS: readonly Vec2[] = [
+  pxz(78, 100), pxz(92, 104), pxz(104, 101), pxz(62, 98),
+  ...[RAMP.path[1], WEST_LIMB.path[1], SW_BRANCH.path[1], { x: 846, z: -780 }].map((q) => ({ x: q.x, z: q.z })),
+];
+/** THE ZIPLINE (L2 → the work floor east of the tree): a mast on L2's east edge carries the cable down over the plaza
+ *  and the build bay's open aisle to a post short of the review lab. Its line was chosen from the actual layout: it
+ *  clears the pole and its arm, L1's rail, the jump stump, the assembly bench (by height) and the canopy. */
+export const ZIPLINE = {
+  /** where a rider steps up to it on L2, the grip under the cable, and the gate in L2's rail it leaves through */
+  enter: { x: 826, z: -721 }, grip: { x: 840, z: -720.4 }, gate: { x: 840.2, z: -719.9 },
+  mast: { x: 838, z: -732, top: 156 },
+  /** the cable: from the mast arm to the far post's top, with a sag mid-span */
+  from: { x: 840, y: L2.y + 57.75, z: -720.4 }, to: { x: 1215, y: 57, z: -683 }, sag: 8,
+  /** the cable over the rider's feet line, and the handle's drop under the trolley: a HumanBase body (shoulders 31.5
+   *  up, 15.8 of arm) hanging from the handle with nearly straight arms has its feet on that line. Other rigs hang
+   *  from the same handle at their own reach (avatar/parkourPose places the body under the hands). */
+  hang: 55, handleDrop: 9,
+  /** where the rider lets go, as a fraction of the cable, and the landing below it */
+  release: 0.93,
+} as const;
+export const L2_RAIL_OPENINGS: readonly Vec2[] = [
+  { x: STAIR.top.x, z: STAIR.top.z }, { x: POLE.ledge.x, z: POLE.ledge.z },
+  { x: 700, z: -862 }, { x: 760, z: -872 }, { x: 830, z: -862 },
+  ZIPLINE.gate,
+];
+
+/** A BALUSTRADE's segments along a polyline — the SAME split build/labTreehouse draws: ~14-unit parts, a part left
+ *  open when its middle comes within 22 of an opening. Shared, so a rail is solid exactly where it is drawn. */
+export function railSegments(path: readonly Vec2[], openings: readonly Vec2[], closed = true): [Vec2, Vec2][] {
+  const out: [Vec2, Vec2][] = [];
+  const n = closed ? path.length : path.length - 1;
+  for (let i = 0; i < n; i++) {
+    const a = path[i], b = path[(i + 1) % path.length];
+    const L = Math.hypot(b.x - a.x, b.z - a.z), parts = Math.max(1, Math.round(L / 14));
+    for (let k = 0; k < parts; k++) {
+      const p0 = { x: a.x + ((b.x - a.x) * k) / parts, z: a.z + ((b.z - a.z) * k) / parts }, p1 = { x: a.x + ((b.x - a.x) * (k + 1)) / parts, z: a.z + ((b.z - a.z) * (k + 1)) / parts };
+      const mid = { x: (p0.x + p1.x) / 2, z: (p0.z + p1.z) / 2 };
+      if (openings.some((o) => Math.hypot(o.x - mid.x, o.z - mid.z) < 22)) continue;
+      out.push([p0, p1]);
+    }
+  }
+  return out;
+}
+
+/** the cable's height at fraction t, with its sag */
+export const ziplineCable = (t: number): RoutePoint => ({
+  x: ZIPLINE.from.x + (ZIPLINE.to.x - ZIPLINE.from.x) * t,
+  y: ZIPLINE.from.y + (ZIPLINE.to.y - ZIPLINE.from.y) * t - ZIPLINE.sag * 4 * t * (1 - t),
+  z: ZIPLINE.from.z + (ZIPLINE.to.z - ZIPLINE.from.z) * t,
+});
+
+/** THE SURFACES a person stands on in the Lab: both decks (L1 with its climb slot cut out), the ramp, the jump stump */
+export function labV2Surfaces(): Standable[] {
+  return [
+    standableFromPolygon("lab/l1", FY + L1.y, l1Rim(), [l1Slot()], L1.t),
+    standableFromPolygon("lab/l2", FY + L2.y, l2Rim(), [], L2.t),
+    standableFromPath("lab/ramp", RAMP.path.map((q) => ({ x: q.x, y: FY + q.y, z: q.z })), RAMP.w / 2, 3),
+    standableFromCircle("lab/jump-stump", FY + JUMP_PAD.y, { x: JUMP_PAD.x, z: JUMP_PAD.z }, JUMP_PAD.r),
+  ];
+}
+
+/** EVERYTHING THAT STOPS A PERSON in the Lab, each with the band it occupies */
+export function labV2HeightSolids(): HeightSolid[] {
+  const SKY = 1e4;
+  const out: HeightSolid[] = [circleSolid("lab/trunk", TREE, TRUNK.r + 4, -SKY, SKY)];
+  ROOTS.forEach(([a, L], i) => ([[0.25, 9], [0.55, 7], [0.85, 5]] as const).forEach(([k, rr], j) => out.push(circleSolid(`lab/root-${i}-${j}`, pxz(a, TRUNK.r + L * k), rr, -SKY, FY + ROOT_H))));
+  L1_POSTS.forEach((p, i) => out.push(circleSolid(`lab/l1-post-${i}`, p, 4, -SKY, FY + L1.y - L1.t)));
+  L2_POSTS.forEach((p, i) => out.push(circleSolid(`lab/l2-post-${i}`, p, 3.5, FY + L1.y - 1, FY + L2.y - L2.t)));
+  out.push(circleSolid("lab/pole", POLE, POLE.r + 1, -SKY, FY + POLE.top));
+  // the SW branch's low end (nobody walks under it, and it is no walkway for a person) and the Toucan's limb
+  // (exactly the discs the floor test has always had: along its run, wherever it is between 6 and 38 up)
+  const sw = SW_BRANCH.path.slice(1, 4);
+  for (let i = 1; i < sw.length; i++) for (let k = 0; k <= 4; k++) {
+    const a = sw[i - 1], b = sw[i], t = k / 4, y = a.y + (b.y - a.y) * t;
+    if (y < 38 && y > 6) out.push(circleSolid(`lab/sw-branch-${i}-${k}`, { x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t }, SW_BRANCH.r + 3, -SKY, SKY));
+  }
+  [TOUCAN_LIMB.from, TOUCAN_LIMB.mid, TOUCAN_LIMB.tip].forEach((p, i) => out.push(circleSolid(`lab/toucan-limb-${i}`, p, 6, FY + 18, FY + 40)));
+  // the work floor: bay furniture, the stations, the overlook wings — at their own heights (unknown → a body's)
+  BAY_PROPS.filter((p) => p.solid).forEach((p) => out.push(rectSolid(`lab/prop-${p.id}`, p, -SKY, FY + (p.y ?? 0) + p.h)));
+  stationSolids().forEach((r, i) => out.push(rectSolid(`lab/station-${i}`, r, -SKY, FY + 40)));
+  OVERLOOK.wings.forEach((r, i) => out.push(rectSolid(`lab/overlook-${i}`, r, -SKY, FY + 40)));
+  // the decks' rails (the slot's too): a rail's band from its deck to its cap (14) and a hand over it — it stops a body
+  // on its deck, not one walking beneath it or passing well above it
+  const rails: [string, [Vec2, Vec2][], number][] = [
+    ["l1", railSegments(l1Rim(), L1_RAIL_OPENINGS), L1.y],
+    ["slot", railSegments(l1Slot().slice(0, 3), [], false), L1.y],
+    ["l2", railSegments(l2Rim(), L2_RAIL_OPENINGS), L2.y],
+  ];
+  for (const [name, segs, y] of rails) segs.forEach(([a, b], i) => out.push(segmentSolid(`lab/rail-${name}-${i}`, { ...a, y: FY + y }, { ...b, y: FY + y }, 1.5, 0, 18)));
+  // the ramp's rope rails, either side, following its slope
+  for (let i = 1; i < RAMP.path.length - 1; i++) {
+    const a = RAMP.path[i - 1], b = RAMP.path[i], dx = b.x - a.x, dz = b.z - a.z, L = Math.hypot(dx, dz);
+    if (L < 1) continue;
+    const nx = -dz / L * (RAMP.w / 2), nz = dx / L * (RAMP.w / 2);
+    for (const sg of [-1, 1]) out.push(segmentSolid(`lab/ramp-rope-${i}-${sg}`, { x: a.x + nx * sg, y: FY + a.y, z: a.z + nz * sg }, { x: b.x + nx * sg, y: FY + b.y, z: b.z + nz * sg }, 1.2, 2, 40));
+  }
+  // the ship stair's body on L1, and the residence's volumes on L2
+  out.push(segmentSolid("lab/stair", { ...STAIR.bottom, y: FY + L1.y }, { ...STAIR.top, y: FY + L1.y }, STAIR.width / 2, 0, L2.y - L1.y));
+  for (const v of [RESIDENCE.main, RESIDENCE.west, RESIDENCE.east]) out.push(rectSolid(`lab/residence-${v.x0}`, { x: v.x0, z: v.z0, w: v.x1 - v.x0, d: v.z1 - v.z0 }, FY + L2.y + 0.5, SKY));
+  // the furnishings of home on the decks (build/labTreehouse): the prow planters, Nova's nook and shelf, the hearth
+  // table and its cushions on L1; the planter boxes and the telescope on L2
+  const deck = (id: string, c: Vec2, r: number, y: number) => out.push(circleSolid(`lab/deck-${id}`, c, r, FY + y, FY + y + 30));
+  [70, 84, 98].forEach((a) => out.push(rectSolid(`lab/deck-prow-${a}`, { x: pxz(a, 101).x - 8, z: pxz(a, 101).z - 4, w: 16, d: 8 }, FY + L1.y, FY + L1.y + 30)));
+  deck("nook", { x: 658.6, z: -759.4 }, 13, L1.y);
+  deck("shelf", { x: 625, z: -786 }, 14, L1.y);
+  out.push(rectSolid("lab/deck-hearth", { x: 724, z: -849, w: 32, d: 19 }, FY + L1.y, FY + L1.y + 30));
+  [60, 110, 150].forEach((a) => deck(`l2-planter-${a}`, { x: L2.cx + Math.cos((a * Math.PI) / 180) * 56, z: L2.cz + Math.sin((a * Math.PI) / 180) * 56 }, 7.5, L2.y));
+  deck("telescope", { x: 696, z: -758 }, 5, L2.y);
+  // the zipline's mast on L2 and its far post on the floor
+  out.push(circleSolid("lab/zip-mast", ZIPLINE.mast, 2.5, FY + L2.y, FY + ZIPLINE.mast.top));
+  out.push(circleSolid("lab/zip-post", ZIPLINE.to, 3, -SKY, ZIPLINE.to.y + 2));
+  return out;
+}
+const SURFACES_V3 = labV2Surfaces();
+const SOLIDS_V3 = labV2HeightSolids();
+
+/** PARKOUR V3 — THE LAB'S HEIGHT-AWARE STAND TEST: may a body of `radius` stand at `p` with its feet as `body`
+ *  (absent: on the Lab floor, which is every caller that predates this)? `ignore`: the one obstacle a vault excuses. */
+export function aiLabV3StandTest(p: Vec2, radius: number, body?: BodyBand, ignore?: ReadonlySet<string>): boolean {
+  if (!inWalk(p)) return false;
+  for (const [ox, oz] of RIM) if (!inWalk({ x: p.x + ox * radius, z: p.z + oz * radius })) return false;
+  return clearOfSolids(p, radius, body ?? { feet: FY, airborne: false }, SOLIDS_V3, SURFACES_V3, FY, ignore);
+}
+
+/** THE ROUTES a person can take on the tree (world/traversalRoutes): the trunk ladder in the climb slot (floor ↔ L1),
+ *  the ship stair climbed hand over hand (L1 ↔ L2), and the zipline (L2 → the work floor). */
+export const LAB_ROUTE_PLACE = "ai-lab";
+export const LAB_ROUTES: readonly TraversalRoute[] = (() => {
+  const toTrunk = Math.atan2(-CD.x, -CD.z);
+  const trunk: TraversalRoute = {
+    id: "lab/trunk-ladder", kind: "ladder", place: LAB_ROUTE_PLACE, twoWay: true, facing: toTrunk, speed: 26, enterRadius: 16, levelTol: 3, holds: [],
+    path: [
+      { ...slotPt(52, 0), y: FY }, { ...slotPt(TRUNK.r + 13, 0), y: FY }, { ...slotPt(TRUNK.r + 13, 0), y: FY + L1.y + 2 },
+      { ...slotPt(TRUNK.r + 13, CLIMB.slotHalf + 4), y: FY + L1.y + 1 }, { ...slotPt(TRUNK.r + 15, CLIMB.slotHalf + 14), y: FY + L1.y },
+    ],
+    label: { a: "Climb the ladder", b: "Climb down the ladder" },
+  };
+  // THE SHIP STAIR, climbed hand over hand. Its foot on L1 is boxed in by the deck rail and the ramp's ropes (it was
+  // sized for the MonkeyAgents), so a person mounts it from the SIDE, off the open lane beside it (20 across), and
+  // climbs a line a little outside the treads so the head stays clear of L2's edge until the feet are over it.
+  const s = STAIR, o = s.out, n = { x: -o.z, z: o.x };
+  const at = (out: number, side: number, y: number): RoutePoint => ({ x: s.bottom.x + o.x * out + n.x * side, y: FY + y, z: s.bottom.z + o.z * out + n.z * side });
+  const stair: TraversalRoute = {
+    id: "lab/ship-stair", kind: "ladder", place: LAB_ROUTE_PLACE, twoWay: true, facing: Math.atan2(-o.x, -o.z), speed: 26, enterRadius: 16, levelTol: 3,
+    path: [at(-2, 20, L1.y), at(-2, 0, L1.y + 1), at(-20, 0, L2.y + 1), at(-34, 0, L2.y)],
+    holds: ["lab/stair"],
+    label: { a: "Climb the stair", b: "Climb down the stair" },
+  };
+  const ride: RoutePoint[] = [];
+  for (let i = 0; i <= 32; i++) { const t = (i / 32) * ZIPLINE.release, c = ziplineCable(t); ride.push({ x: c.x, y: c.y - ZIPLINE.hang, z: c.z }); }
+  const drop = ride[ride.length - 1];
+  const zip: TraversalRoute = {
+    id: "lab/zipline", kind: "zipline", place: LAB_ROUTE_PLACE, twoWay: false, speed: 95, enterRadius: 16, levelTol: 3, grip: ZIPLINE.hang, handleDrop: ZIPLINE.handleDrop,
+    path: [{ ...ZIPLINE.enter, y: FY + L2.y }, ...ride, { x: drop.x + 4, y: FY, z: drop.z }],
+    label: { a: "Ride the zipline" },
+  };
+  return [trunk, stair, zip];
+})();

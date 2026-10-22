@@ -148,7 +148,8 @@ export class ReplayWalk {
    *  path with, so the two offices place the same person at the same point at the same moment. */
   private distanceAt(elapsedMs: number): number {
     const t = Math.min(1, elapsedMs / this.durationMs);
-    return (this.pacing === "linear" ? t : easeInOutQuad(t)) * this.total;
+    // "decel": braking out of a run — fast at the start of the leg, slowing to its end (ease-out)
+    return (this.pacing === "linear" ? t : this.pacing === "decel" ? 1 - (1 - t) * (1 - t) : easeInOutQuad(t)) * this.total;
   }
 
   /** The point `d` units along the route, by segment. */

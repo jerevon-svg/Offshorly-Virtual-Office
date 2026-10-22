@@ -136,11 +136,14 @@ export class DerivedNav {
 
   /** Clearance at an arbitrary world point, capped. Only solids bucketed near the point are consulted,
    *  which is sound because the cap is smaller than the bucket padding. */
-  clearanceAtPoint(p: Vec2): number {
+  clearanceAtPoint(p: Vec2, ignore?: ReadonlySet<string>): number {
     const near = this.buckets.get(this.bucketIndex(p));
     if (!near) return CLEARANCE_CAP;
     let best = CLEARANCE_CAP;
     for (const s of near) {
+      // PARKOUR V1 — a standable top the body's feet have already cleared (world/standables) is not an obstacle
+      // to THAT body at THAT height. Only entity ids can be named here: walls and door architecture never are.
+      if (ignore && ignore.has(s.id)) continue;
       const d = distToShape(p, s.shape);
       if (d < best) best = d;
       if (best === 0) return 0;

@@ -11,12 +11,16 @@ from app.services.call_registry import CallRegistry
 from app.services.meeting_chat import MeetingChatRegistry
 from app.services.meeting_hosts import MeetingHostRegistry
 from app.services.dnd_registry import DndRegistry
+from app.services.peer_status_registry import PeerStatusRegistry
 from app.services.global_chat_activity import GlobalChatActivityRegistry
 from app.services.offline_lineup import OfflineLineup
 from app.services.room_presence import RoomPresenceRegistry
 from app.services.spatial_session import SpatialSessionRegistry
 from app.services.travel_party import TravelPartyRegistry
 from app.services.whiteboard_rooms import WhiteboardRoomRegistry
+from app.services.scooter_registry import ScooterRegistry
+from app.services.traffic_holds import TrafficHoldRegistry
+from app.services.scooter_accidents import AccidentRegistry
 
 # CONSTRUCTION SEAM for realtime shared state. This module owns the Socket.IO server and every
 # ephemeral registry singleton; it is the only place they are instantiated.
@@ -107,6 +111,15 @@ meeting_invites = CallInviteRegistry()
 travel_parties = TravelPartyRegistry()
 party_invites = CallInviteRegistry()
 
+# CAMPUS SCOOTERS — who rides which of the six (see scooter_registry.py). In-memory: a restart re-docks all.
+scooters = ScooterRegistry()
+
+# CAMPUS TRAFFIC HOLDS (S4) — the one place a car is told to stop and to go again (see traffic_holds.py)
+traffic_holds = TrafficHoldRegistry()
+
+# SCOOTER ACCIDENTS (S5) — one confirmed event per real crash (see scooter_accidents.py)
+scooter_accidents = AccidentRegistry()
+
 # PHASE 7D — WHAT IS SAID INSIDE A MEETING. Ephemeral and in-memory by design: a meeting's chat ends
 # with the meeting, writes nothing, and is deliberately NOT the DM system (see meeting_chat.py).
 meeting_chat = MeetingChatRegistry()
@@ -114,6 +127,8 @@ meeting_chat = MeetingChatRegistry()
 # Ephemeral DND-room-lock feature state — see dnd_registry.py/room_presence.py module
 # docstrings. Same in-memory/single-process assumption as the registries above.
 dnd_registry = DndRegistry()
+# Each connected person's own effective status, relayed to peers — see peer_status_registry.py.
+peer_status = PeerStatusRegistry()
 room_presence = RoomPresenceRegistry()
 # Ephemeral "has an active Global Chat window" presence — see global_chat_activity.py. Same
 # in-memory/single-process assumption as the registries above; refcounted per socket so

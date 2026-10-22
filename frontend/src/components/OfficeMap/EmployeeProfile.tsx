@@ -565,7 +565,7 @@ export function EmployeeProfile({
 
           <div className={styles.body}>
             {tab === "profile" && (
-              <ProfileCharacter email={email} fallbackSrc={avatarSrcFor(email)} name={name} />
+              <ProfileCharacter email={email} fallbackSrc={avatarSrcFor(email)} name={name} isSelf={isSelf} />
             )}
 
             {tab === "achievements" && isSelf && <AchievementGallery />}

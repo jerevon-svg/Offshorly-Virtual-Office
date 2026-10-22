@@ -127,6 +127,21 @@ describe("AtlasZohoService.submitTimeLogs", () => {
     });
   });
 
+  it("sends exactly the employee's entries — no session, no unallocated time, no identity fields", async () => {
+    await submit(
+      jsonResponse({ success: true, submission_id: "vo-1", submitted_at: "2026-08-11T10:00:00Z", entries_created: 1, failures: [] }),
+    );
+    const body = JSON.parse((apiFetch.mock.calls[0][1] as RequestInit).body as string);
+    expect(Object.keys(body).sort()).toEqual(["entries", "work_date"]);
+    expect(body.entries).toHaveLength(1);
+    expect(Object.keys(body.entries[0]).sort()).toEqual([
+      "billable",
+      "task_id",
+      "time_spent_minutes",
+      "work_description",
+    ]);
+  });
+
   it("passes an explicit billable:false through", async () => {
     await submit(
       jsonResponse({

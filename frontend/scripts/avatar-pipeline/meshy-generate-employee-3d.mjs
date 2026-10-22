@@ -84,6 +84,27 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Meshy's hard rigging cap (docs.meshy.ai/en/api/rigging): "models with more than
+// 300,000 faces are not supported for rigging".
+const RIGGING_FACE_LIMIT = 300_000;
+
+/** Triangle count of a .glb, read straight out of its glTF JSON chunk. Offline,
+ *  no dependencies — used to guard a direct (un-remeshed) rig submission. */
+function glbTriangleCount(glbPath) {
+  const buf = fs.readFileSync(glbPath);
+  if (buf.readUInt32LE(0) !== 0x46546c67) throw new Error(`Not a GLB: ${glbPath}`);
+  const jsonLen = buf.readUInt32LE(12);
+  const gltf = JSON.parse(buf.subarray(20, 20 + jsonLen).toString("utf8"));
+  let tris = 0;
+  for (const mesh of gltf.meshes || []) {
+    for (const prim of mesh.primitives || []) {
+      if (prim.indices !== undefined) tris += gltf.accessors[prim.indices].count / 3;
+      else if (prim.attributes && prim.attributes.POSITION !== undefined) tris += gltf.accessors[prim.attributes.POSITION].count / 3;
+    }
+  }
+  return Math.round(tris);
+}
+
 function mimeTypeFor(filePath) {
   const ext = path.extname(filePath).toLowerCase();
   if (ext === ".png") return "image/png";
@@ -385,6 +406,18 @@ async function main() {
   const poseMode = flagValue("--pose-mode") || DEFAULT_POSE_MODE;
   const resumeTaskId = flagValue("--from-image-to-3d-task");
   const resumeRemeshTaskId = flagValue("--from-remesh-task");
+  // ADDITIVE (2026-09-17): rig straight off a SUCCEEDED image-to-3d task, with no
+  // remesh in between. Meshy's rigging API accepts ANY task id as input_task_id —
+  // its only stated limit is <300,000 faces (docs.meshy.ai/en/api/rigging), and
+  // Remesh is documented as the REMEDY for exceeding that cap, not a required
+  // stage. The remesh coupling was only ever in this file's callers; submitRigging
+  // itself is task-type agnostic and is reused here UNCHANGED. Nothing on the
+  // normal remesh route is touched.
+  const rigFromImageTaskId = flagValue("--rig-from-image-to-3d-task");
+  if (rigFromImageTaskId && (resumeTaskId || resumeRemeshTaskId || stopAfter)) {
+    console.error("--rig-from-image-to-3d-task runs Phase 3 only and cannot be combined with --from-image-to-3d-task, --from-remesh-task or --stop-after");
+    return usageAndExit();
+  }
   if (resumeRemeshTaskId && (resumeTaskId || stopAfter)) {
     console.error("--from-remesh-task runs Phase 3 only and cannot be combined with --from-image-to-3d-task or --stop-after");
     return usageAndExit();
@@ -424,6 +457,56 @@ async function main() {
 
   try {
     const balanceBefore = await checkBalance(apiKey);
+
+    if (rigFromImageTaskId) {
+      // ---- Phase 3 only, DIRECT: rig a SUCCEEDED image-to-3d task, no remesh ----
+      console.log(`[meshy-employee] Phases 1+2 SKIPPED — rigging DIRECTLY from image-to-3d task ${rigFromImageTaskId} (read-only GET, no credits).`);
+      const srcTask = await meshyFetch(apiKey, "GET", `/v1/image-to-3d/${rigFromImageTaskId}`);
+      if (srcTask.status !== "SUCCEEDED") throw new Error(`Cannot rig: image-to-3d task has status ${srcTask.status}, expected SUCCEEDED`);
+      if (!(srcTask.model_urls && srcTask.model_urls.glb)) throw new Error("Cannot rig: image-to-3d task has no model_urls.glb (expired?)");
+      // Face-count guard, measured from the raw GLB already on disk so the check is
+      // deterministic and offline. Meshy hard-rejects >300k faces for rigging.
+      const rawGlb = path.join(outDir, `${employeeName}-raw-model.glb`);
+      if (fs.existsSync(rawGlb)) {
+        const faces = glbTriangleCount(rawGlb);
+        console.log(`[meshy-employee] local raw GLB face count = ${faces}`);
+        if (faces >= RIGGING_FACE_LIMIT) {
+          throw new Error(`Cannot rig: ${faces} faces >= Meshy's ${RIGGING_FACE_LIMIT} rigging limit — a remesh is required first`);
+        }
+      } else {
+        throw new Error(`Cannot rig: expected local raw GLB not found at ${rawGlb} (needed for the face-count guard)`);
+      }
+      const rigStartedAt = new Date().toISOString();
+      const rigTaskId = await submitRigging(apiKey, srcTask.id);
+      const rigTask = await pollRigging(apiKey, rigTaskId);
+      const downloaded = await downloadRiggingResults(rigTask, outDir, employeeName);
+      const balanceAfter = await checkBalance(apiKey);
+      const record = {
+        step: "rigging",
+        employee: employeeName,
+        source_image_to_3d_task_id: srcTask.id,
+        rigged_without_remesh: true,
+        resumed_from_existing_task: true,
+        endpoint: "POST /openapi/v1/rigging",
+        request_settings: { input_task_id: srcTask.id },
+        task_id: rigTask.id,
+        consumed_credits: rigTask.consumed_credits ?? null,
+        balance_before: balanceBefore,
+        balance_after: balanceAfter,
+        started_at: rigStartedAt,
+        finished_at: new Date().toISOString(),
+        meshy_created_at: rigTask.created_at ?? null,
+        meshy_finished_at: rigTask.finished_at ?? null,
+        expires_at: rigTask.expires_at ?? null,
+        result_keys: Object.keys(rigTask.result || {}),
+        basic_animation_keys: Object.keys((rigTask.result || {}).basic_animations || {}),
+        artifacts: downloaded,
+      };
+      fs.writeFileSync(path.join(outDir, `${employeeName}-rig.task.json`), JSON.stringify(record, null, 2));
+      console.log(`[meshy-employee] Phase 3 SUCCESS (direct, no remesh). task_id=${rigTask.id} consumed_credits=${rigTask.consumed_credits ?? "?"}`);
+      for (const d of downloaded) console.log(`[meshy-employee]   ${d.label} -> ${d.outPath} (${d.bytes} bytes)`);
+      return;
+    }
 
     if (resumeRemeshTaskId) {
       // ---- Phase 3 only: resume from an existing SUCCEEDED remesh task ----

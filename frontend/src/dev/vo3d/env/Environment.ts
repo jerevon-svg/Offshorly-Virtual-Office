@@ -20,6 +20,7 @@ import * as THREE from "three";
 import type { Renderer } from "../render/Renderer";
 import type { ExteriorScenery } from "../build/exterior";
 import type { Rect } from "../core/coords";
+import { TrafficClock } from "../world/trafficClock";
 import { blendPresetInto, clonePreset, lerpHex, type EnvPreset } from "./presets";
 import { Bolt } from "./Bolt";
 import { Lightning, type ThunderEvent } from "./Lightning";
@@ -496,10 +497,15 @@ export class Environment {
     }
     // the foliage clock only runs while there is wind to spend it on (see exterior.windTick)
     this.scenery?.windTick(this.elapsed);
-    // THE TRAFFIC, on the WALL clock so every client and both floors agree (world/traffic) — and only while
-    // the exterior is actually drawn: OFFICE, the Cave and a hidden world pay nothing
-    if (this.scenery?.root.visible) {
-      this.scenery.trafficTick(this.trafficClock ? this.trafficClock() : Date.now() / 1000);
+    // THE TRAFFIC, on the SERVER's clock so every client and every floor agree (world/traffic, world/
+    // trafficClock) — and only while the exterior is actually drawn: OFFICE, the Cave and a hidden world
+    // pay nothing. The shared clock is still read while hidden, which is what lets it take a new offset
+    // at once rather than slewing toward it on screen.
+    const drawn = this.scenery?.root.visible === true;
+    const shared = this.sharedTrafficClock.now(Date.now(), drawn);
+    this.lastTrafficTime = this.trafficClock ? this.trafficClock() : shared;
+    if (this.scenery && drawn) {
+      this.scenery.trafficTick(this.trafficClock ? this.trafficClock() : shared);
       // DETAIL FOLLOWS THE CAMERA (build/exterior detailTick): near-cut trees and ground cover round wherever
       // the active camera is, in the exterior's own frame — it may be anchored a storey down
       const cam = this.R.activeCamera;
@@ -509,6 +515,10 @@ export class Environment {
   private readonly camScratch = new THREE.Vector3();
   /** DEV/CAPTURE: replace the traffic's wall clock (seconds) — null restores it */
   trafficClock: (() => number) | null = null;
+  /** THE SERVER-SYNCED CLOCK the traffic runs on; the host feeds it the movement feed's offset */
+  readonly sharedTrafficClock = new TrafficClock();
+  /** S4 — the traffic time (server seconds) the cars were last placed at: obstacle checks read the SAME cars */
+  lastTrafficTime = Number.NaN;
 
   /** Advance the travelling grade by dt and write the frame it lands on. */
   private step(dt: number): void {

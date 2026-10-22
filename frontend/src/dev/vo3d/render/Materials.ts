@@ -35,6 +35,10 @@ export const PALETTE = {
   //                     darker than a room's so the circulation zone reads as circulation. The transition
   //                     is a tone change on a continuous floor, which is how a real building does it —
   //                     not two unrelated filled shapes meeting at a line.
+  // THE EMPTY UPPER STOREYS' hall tone — the same polished tile, the same world-phased grout, one quiet step
+  // off hallTile so each floor reads as its own the moment the doors open (rooms/plainFloor.ts)
+  hallTileCompass: 0xdfe4d6, // floor 3, Compass University: a pale sage, Offshorly's green at a whisper
+  hallTileSocial: 0xe2dce6, //  floor 4, Gaming & Social Hub: a soft cool lilac-grey
   grout: 0xc4b7a6,
   bronze: 0xa98a63, // the arc counter's champagne/bronze visitor-facing fascia (measured 135,103,71 lit)
   bronzeDark: 0x6f5738,
@@ -607,6 +611,28 @@ export function uiScreenMat(id: string, w: number, h: number, draw: (ctx: Canvas
   m = new THREE.MeshStandardMaterial({ color: 0x000000, map: tex, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: intensity, roughness: 0.18, metalness: 0.05 });
   materials.set(key, m);
   return unique ? new THREE.MeshStandardMaterial({ color: 0x000000, map: m.map, emissive: 0xffffff, emissiveMap: m.emissiveMap, emissiveIntensity: intensity, roughness: 0.18, metalness: 0.05 }) : m;
+}
+
+/** A WORKING DESKTOP — the default face of every monitor and laptop that does not bring its own: a dim slate desktop with
+ *  one app window (title bar, sidebar, lines of text, an accent), so a powered screen reads as somebody's work rather
+ *  than a blue rectangle. One shared canvas texture for the whole office; emissive, no light of its own, kept modest so
+ *  a desk of them never glares (falls back to the plain screen where there is no canvas, e.g. tests). */
+export function workScreenMat(): THREE.MeshStandardMaterial {
+  return uiScreenMat("work-desktop", 192, 120, (c, w, h) => {
+    const bg = c.createLinearGradient(0, 0, 0, h); bg.addColorStop(0, "#1d2a3d"); bg.addColorStop(1, "#14202f");
+    c.fillStyle = bg; c.fillRect(0, 0, w, h);
+    c.fillStyle = "#0f1722"; c.fillRect(0, h - 9, w, 9); //                                       taskbar
+    for (let i = 0; i < 5; i++) { c.fillStyle = i === 1 ? "#5aa0e6" : "#3a4a60"; c.fillRect(8 + i * 11, h - 7, 7, 5); }
+    const x0 = 14, y0 = 10, ww = w - 28, wh = h - 30; //                                         the app window
+    c.fillStyle = "#e9eef4"; c.fillRect(x0, y0, ww, wh);
+    c.fillStyle = "#2f4a6b"; c.fillRect(x0, y0, ww, 9); //                                        title bar
+    c.fillStyle = "#cfd9e4"; c.fillRect(x0, y0 + 9, 34, wh - 9); //                               sidebar
+    for (let i = 0; i < 6; i++) { c.fillStyle = i === 2 ? "#5aa0e6" : "#9fb0c3"; c.fillRect(x0 + 5, y0 + 15 + i * 9, 22, 3); }
+    for (let i = 0; i < 9; i++) { //                                                              lines of work
+      c.fillStyle = i % 4 === 0 ? "#3d6f9e" : "#8796a8";
+      c.fillRect(x0 + 42, y0 + 16 + i * 7, (ww - 52) * (0.45 + 0.5 * (((i * 37) % 11) / 11)), 2.4);
+    }
+  }, 0.6);
 }
 
 /** Reception's façade / balustrade glass: the source glass is a cool teal-tinted pane and reads a little

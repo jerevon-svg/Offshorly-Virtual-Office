@@ -145,6 +145,7 @@ export function Vo3dCheckoutPanels({ flow, timeInMs, frozenCheckoutAtMs, success
         result={flow.submissionResult}
         onTryAgain={() => void flow.retrySubmit()}
         onSaveAndReturnLater={flow.saveAndReturnLater}
+        onCheckOutAnyway={flow.checkOutWithoutConfirmedHours}
       />
       {!successCardDismissed && (
         <CheckoutSuccessCard
@@ -152,6 +153,7 @@ export function Vo3dCheckoutPanels({ flow, timeInMs, frozenCheckoutAtMs, success
           workedLabel={flow.workedLabel}
           entries={flow.entries}
           submissionResult={flow.submissionResult}
+          recovery={flow.recovery}
           onDismiss={onDismissSuccessCard}
         />
       )}

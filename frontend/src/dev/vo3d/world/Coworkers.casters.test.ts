@@ -19,6 +19,8 @@ import type { Vo3dCoworker } from "../app/coworkers";
 import type { Vec2 } from "../core/coords";
 
 /** A prototype with REAL meshes in it — the empty Group the sync tests use could not show this bug. */
+// these exercise the LEGACY prototype pipeline with "bon" as a stock character; HumanBase peers: Coworkers.human.test
+vi.mock("../avatar/humanBody", async (orig) => ({ ...(await orig<typeof import("../avatar/humanBody")>()), humanBodyFor: () => null }));
 vi.mock("../avatar/CastPrototypes", () => ({
   prototypeFor: (id: string) => {
     const scene = new THREE.Group();

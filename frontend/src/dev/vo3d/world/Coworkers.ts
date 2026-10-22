@@ -58,15 +58,28 @@ import * as THREE from "three";
 import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { BON_STANDING_HEIGHT, CLIP_IDLE, CLIP_RUN, CLIP_WALK, type AvatarLod, CLIP_SIT, CLIP_SIT_ANSWER } from "../adapters/v1Avatar";
 import { castLabelTexture, prototypeFor, type CastPrototype } from "../avatar/CastPrototypes";
+import { createHumanBody, humanBodyFor, type HumanBody } from "../avatar/humanBody";
 import { dist, FACING_YAW, stepAngle, wrapAngle, type Facing, type Vec2 } from "../core/coords";
 import { standablePointNear, type StandTest } from "../player/PlayerBody";
 import { AIRBORNE_POSE_PHASE, JUMP_DURATION_MS, PlayerJump } from "../player/PlayerJump";
+import { HARD_FALL, LAND_ABSORB_FALL, ParkourPose, PARKOUR_MS, type ParkourMove } from "../avatar/parkourPose";
+import { BODY } from "./heightSolids";
+import { routeDuration, routeExit, sampleRoute, ziplineHold, type RouteDir, type TraversalRoute } from "./traversalRoutes";
+import { ZiplineTrolley } from "./ziplineRig";
+import type { GripProfile } from "../avatar/parkourPose";
 import type { Vo3dCoworker, Vo3dWalkPacing } from "../app/coworkers";
-import { DOOR_LOOKAHEAD, PLAYER_SPRINT_SPEED, PLAYER_WALK_SPEED } from "../player/PlayerMode";
-import { locomotionClip, locomotionRate } from "../avatar/gait";
+import { doorLookahead, PLAYER_SPRINT_SPEED } from "../player/PlayerMode";
+import { traverseHeight, traverseProgress, type TraverseKind } from "../player/traversal";
+import { gaitRate, locomotion, sprintStride } from "../avatar/gait";
+import { SeatedWork } from "../human/seatedWork";
 import type { DoorBody } from "../interact/Door";
 import { ReplayWalk } from "./coworkerWalk";
-import { deskSeatedRootForRig, sceneRig, seatedRootForRig, type SeatedRig } from "../interact/seatContact";
+import { RiderPose } from "../avatar/riderPose";
+import { CrashPose, type CrashBodyFrame } from "../avatar/crashPose";
+import { GaitPose } from "../avatar/gaitPose";
+import { CRASH } from "./accidentMotion";
+import { RIDER_GRIPS } from "./scooters";
+import { deskSeatedRootForRig, HUMANBASE_PELVIS_BELOW_HIPS, sceneRig, seatedRootForRig, type SeatedRig } from "../interact/seatContact";
 
 /** How fast a coworker turns toward their direction of travel, rad/s. The navigation controller's rate,
  *  which is also what devtools/Crowd.ts turns its bodies at — one figure for every walking body in V2. */
@@ -105,6 +118,22 @@ export const facingTrace = (): ArrivalDecision[] => arrivals.map((d) => ({ ...d 
 /** HOW LATE A RELAYED JUMP MAY BE AND STILL BE WORTH DRAWING, ms. One whole arc: any later and the
  *  jump it describes has already finished everywhere else. See Coworkers.jump. */
 const JUMP_STALE_MS = JUMP_DURATION_MS;
+/** PARKOUR V1 — the same rule for the two follow-ups: a double jump older than the rest of a doubled arc, or a
+ *  roll older than the roll itself, has finished everywhere else and is dropped rather than drawn late. */
+const DOUBLE_STALE_MS = 900;
+const ROLL_STALE_MS = PARKOUR_MS.roll;
+/** a relayed roll that finds the body still in the air waits for its landing — but no longer than the longest arc
+ *  there is (a double jump's), so it is never held for a landing that is not coming */
+const ROLL_WAIT_MS = 900;
+/** PARKOUR V2 — how long after a traversal's relay its own walk may still arrive and be adopted as its line */
+const TRAVERSE_ADOPT_MS = 300;
+/** PARKOUR V3 — a published feet height that disagrees with where this body's own continuity has it standing is
+ *  adopted after this long (a lost relay, a missed fall), never at once (a stale leg) */
+const ELEVATION_ADOPT_MS = 650;
+/** PARKOUR V3 — a grounded body whose support drops away by more than this walks off the edge and FALLS */
+const FALL_DROP = 5;
+/** how fast a standing body eases onto a new floor height (a furniture top, a ramp), per second */
+const GROUND_EASE = 14;
 
 /** A standing body's route: shared, so a room of stationary people allocates nothing per frame. */
 const EMPTY_ROUTE: readonly Vec2[] = [];
@@ -126,7 +155,8 @@ const LEG_GRACE_MS = 200;
 // package ships no run clip" fallback and the rate that keeps it from skating.
 /** A movement whose MEAN speed is at least this runs; below it walks. Half way between the two speeds the
  *  player can move at, so a walk at 70 is a walk and a sprint at 100 is a run, with margin either side. */
-const RUN_FROM_SPEED = (PLAYER_WALK_SPEED + PLAYER_SPRINT_SPEED) / 2;
+// a peer leg faster than any walk (54.6) is a run: 80, not the walk/sprint midpoint (that became 127 with the 200 sprint)
+const RUN_FROM_SPEED = 80;
 
 /** How close two DESK-PLACED coworkers may stand before the second is nudged to the next legal ring. Half
  *  a body rather than a full one: the roster's own per-room seating already gives everyone a distinct
@@ -232,10 +262,13 @@ export class CoworkerPlacer {
   private readonly canStand: StandTest;
   private readonly radius: number;
 
-  constructor(toWorld: (p: Vec2) => Vec2, canStand: StandTest, radius: number) {
+  private readonly topAt: ((p: Vec2, feet: number) => number | null) | null;
+
+  constructor(toWorld: (p: Vec2) => Vec2, canStand: StandTest, radius: number, topAt: ((p: Vec2, feet: number) => number | null) | null = null) {
     this.toWorld = toWorld;
     this.canStand = canStand;
     this.radius = radius;
+    this.topAt = topAt;
   }
 
   /** Byte-for-byte placeCoworkers, minus the work that cannot have changed. */
@@ -264,8 +297,12 @@ export class CoworkerPlacer {
         const hit = this.liveSpots.get(coworker.email);
         // Keyed on the V1-frame point, before toWorld: the transform is a constant of this placer, so two
         // equal inputs to it have equal outputs, and skipping the call is part of the saving.
-        pos = hit && hit.x === x && hit.z === z ? hit.pos : standablePointNear(this.toWorld(coworker.point), this.radius, this.canStand);
-        liveSpots.set(coworker.email, { x, z, pos });
+        const feet = coworker.feet;
+        // PARKOUR V1 — STANDING ON A TOP: the published point is inside the piece's outline, which the floor-level
+        // stand test refuses, so it is kept as-is — but only when a real standable top is there at that height.
+        const onTop = (w: Vec2): Vec2 | null => (feet !== undefined && this.topAt?.(w, feet) != null ? w : null);
+        pos = hit && hit.x === x && hit.z === z && hit.feet === feet ? hit.pos : onTop(this.toWorld(coworker.point)) ?? standablePointNear(this.toWorld(coworker.point), this.radius, this.canStand);
+        liveSpots.set(coworker.email, { x, z, feet, pos });
       } else {
         pos = deskSpots[d++];
       }
@@ -319,18 +356,71 @@ export class CoworkerPlacer {
 const HEAD_ANCHOR_Y = BON_STANDING_HEIGHT + 6;
 
 /** One memoised live answer: the V1-frame point it was computed for, and what it came out as. */
-type LiveSpot = { x: number; z: number; pos: Vec2 | null };
+type LiveSpot = { x: number; z: number; feet?: number; pos: Vec2 | null };
 
 /** One coworker's body: a clone, a mixer, its clips, a nameplate — and, Phase 6A, a walk it may be
  *  replaying. Locomotion is modelled on devtools/Crowd.ts's member, which has walked cast bodies around
  *  this world since the stress harness: same clip pair, same crossfade, same turn-toward-travel. What is
  *  different is where the route comes from — V1's wire rather than a random roam target. */
+/** WHAT A COWORKER BODY IS BUILT FROM. A legacy character is the shared parsed prototype, cloned per body; a
+ *  HumanBase employee is their OWN body, built by the same factory the local player's avatar uses
+ *  (avatar/humanBody createHumanBody), so a peer's Bon is the viewer's own Bon. */
+type HumanSource = { readonly id: string; readonly human: HumanBody };
+type BodySource = CastPrototype | HumanSource;
+const isHuman = (s: BodySource): s is HumanSource => "human" in s;
+
+/** avatarId → appearance → HumanBase or legacy body: the one resolver (avatar/humanBody) the local player uses
+ *  too. A HumanBase load failure falls back to the legacy character, never to an absent person. */
+function bodySourceFor(avatarId: string, lod: AvatarLod): Promise<BodySource> {
+  const cfg = humanBodyFor(avatarId);
+  if (!cfg) return prototypeFor(avatarId, lod);
+  return createHumanBody(cfg).then(
+    (human): BodySource => ({ id: avatarId, human }),
+    (e: unknown) => { console.warn(`vo3d: HumanBase body for ${avatarId} failed — falling back to the legacy GLB`, e); return prototypeFor(avatarId, lod); },
+  );
+}
+/** a built source that never became a body (the person left, a newer roster won) */
+function discardSource(s: BodySource | null): void { if (s && isHuman(s)) s.human.human.dispose(); }
+
+/** S2 — a remote rider's body on a scooter, as the world places it each frame from the pose stream (the
+ *  local ride's own numbers: avatar/Avatar root at the deck's height, yaw π − heading, lean and pitch) */
+export interface CoworkerScooterRide {
+  x: number; z: number; y: number; yaw: number; lean: number; pitch: number;
+  /** S6 — a crash frame (avatar/crashPose): the skeleton falls, tumbles and gets up; the root stays upright
+   *  under the hips at (x, y, z) */
+  crash?: CrashBodyFrame | null;
+  /** S6 — hands on the grips? false while falling off (default true) */
+  rider?: boolean;
+}
+
 class CoworkerBody {
   readonly root = new THREE.Group();
+  /** THE MODEL FRAME, between the root (where the body stands) and the mesh: the scooter rider pose leans
+   *  this, exactly as it leans Avatar's own model group, so the root's position is never fought over */
+  private readonly model = new THREE.Group();
+  /** S2 — the hands-on-the-grips pose (avatar/riderPose), made on this body's FIRST ride: measuring a rig is
+   *  not free, and most bodies never ride */
+  private riderPose: RiderPose | null = null;
+  /** S6 — the crash on the skeleton, made with the rider pose (a crash only ever follows a ride) */
+  private crashPose: CrashPose | null = null;
+  /** THE SPRINT / SKID / BANK this peer's replay shows (avatar/gaitPose), the local body's own layer */
+  private readonly gait: GaitPose;
+  private gaitYaw = 0;
+  private skidLead: 1 | -1 = 1;
+  private wasDecel = false;
+  /** S2 — on a scooter: the pose stream owns where this body is, and nothing else may move it */
+  private scooterRide: CoworkerScooterRide | null = null;
+  /** S2 — the movement that arrived while the ride still held the body: the rider's own step off, which can
+   *  overtake the scooter's release (two sockets, no common order). Played, aged, the moment the ride ends. */
+  private afterRide: { kind: "walk"; args: [string, Vec2[], number, number, Vo3dWalkPacing]; at: number } | { kind: "glide"; at: Vec2; yaw: number } | null = null;
   readonly avatarId: string;
   readonly displayName: string;
   readonly triangles: number;
-  private readonly mixer: THREE.AnimationMixer;
+  private readonly mixer: THREE.AnimationMixer | null;
+  /** a HumanBase employee's own runtime (its mixer, behaviour layers and face), or null for a legacy clone */
+  private readonly human: HumanBody["human"] | null;
+  /** a seated HumanBase peer's hands: typing at a workstation, resting elsewhere (human/seatedWork) */
+  private readonly seatedWork: SeatedWork | null = null;
   private readonly actions: Record<string, THREE.AnimationAction> = {};
   private current = "";
   private label: THREE.Sprite | null = null;
@@ -375,6 +465,15 @@ class CoworkerBody {
    *  sitting, standing up, a walk being dropped, disposal — and it terminates on its own besides, so
    *  there is no path that leaves somebody hanging in the air. */
   private readonly vertical = new PlayerJump();
+  /** PARKOUR V1 — root → parkour wrapper → model, exactly as avatar/Avatar: the articulated flip, landing roll and
+   *  landing absorb (avatar/parkourPose), the same curves the jumper's own screen plays */
+  private readonly parkourFx = new ParkourPose(BON_STANDING_HEIGHT);
+  /** a relayed roll that arrived while this body was still in the air: played on its landing, if soon enough */
+  private pendingRoll = 0;
+  /** PARKOUR V2 — a relayed vault or mantle being replayed: the same line and height curves the traverser ran
+   *  (player/traversal), from where this body stood to the end of the walk it published with it. `to` is null when
+   *  no walk has arrived for it (the body then rises or arcs in place and the walk, if it comes, moves it). */
+  private trav: { kind: TraverseKind; elapsed: number; ms: number; from: Vec2; to: Vec2 | null; startY: number; endY: number; apex: number; want: number } | null = null;
   /** PHASE 6C — the seat anchor this body is seated in, or null while standing/walking. */
   seatedIn: string | null = null;
   /** The clips-and-scale reading the seated pose is computed from — the shared prototype's, which is the
@@ -383,24 +482,69 @@ class CoworkerBody {
 
   /** the ground under a point (the world's exterior ground model; 0 indoors), or null for a flat world */
   private readonly ground: ((p: Vec2) => number) | null;
+  /** PARKOUR V1 — the validator for a published feet height (CoworkersDeps.topAt) */
+  private readonly topAt: ((p: Vec2, feet: number) => number | null) | null;
+  /** PARKOUR V1 — the feet height this person's session published (a furniture top), or null on the floor */
+  elevation: number | null = null;
+  /** PARKOUR V3 — the highest real surface at a point at or below a height (CoworkersDeps.supportAt): what lets this
+   *  body stand on the deck it is on beneath the one overhead, walk up a ramp, and fall when it walks off an edge */
+  private readonly supportAt: ((p: Vec2, maxTop: number) => number) | null;
+  /** how long the published height has disagreed with this body's own continuity, ms; whether it has a height yet */
+  private disagreeMs = 0;
+  private anchored = false;
+  /** PARKOUR V3 — a ladder or zipline being replayed (the same route and pace as the traverser's), and the relay it
+   *  came from (a late joiner's snapshot names the same one — it is applied once) */
+  private routeRun: { r: TraversalRoute; dir: RouteDir; elapsed: number; ms: number } | null = null;
+  routeKey: string | null = null;
 
-  constructor(proto: CastPrototype, name: string, at: Vec2, yaw: number, phase: number, ground: ((p: Vec2) => number) | null = null) {
+  constructor(source: BodySource, name: string, at: Vec2, yaw: number, phase: number, ground: ((p: Vec2) => number) | null = null, topAt: ((p: Vec2, feet: number) => number | null) | null = null, supportAt: ((p: Vec2, maxTop: number) => number) | null = null) {
     this.ground = ground;
-    this.avatarId = proto.id;
+    this.topAt = topAt;
+    this.supportAt = supportAt;
+    this.avatarId = source.id;
     this.displayName = name;
-    this.triangles = proto.triangles;
-    this.rig = sceneRig(proto.scene, proto.clips);
-    const body = cloneSkinned(proto.scene) as THREE.Group;
     this.root.name = `coworker:${name}`;
-    this.root.add(body);
     this.root.position.set(at.x, 0, at.z);
     this.yaw = yaw;
     this.root.rotation.set(0, yaw, 0);
-    this.mixer = new THREE.AnimationMixer(body);
-    // EVERY clip the prototype carries, bound once. The prototypes are the same consolidated GLBs the
-    // hero avatar and the stress crowd use, so `walking` is there; hasClip is still asked before it is
-    // played, because an older asset without it must fall back rather than freeze mid-pose.
-    for (const clip of proto.clips) this.actions[clip.name] = this.mixer.clipAction(clip);
+    if (isHuman(source)) {
+      // HUMANBASE: the body is already in world units (36 = BON_STANDING_HEIGHT, feet at 0). Its actions are
+      // keyed here by VO's clip names (CLIP_IDLE → the employee's idle profile), so everything below — play,
+      // freeze, seat formula, locomotion — runs unchanged on either kind of body.
+      const h = source.human;
+      this.human = h.human;
+      this.seatedWork = new SeatedWork(h.human);
+      this.mixer = null;
+      this.triangles = h.human.stats().triangles;
+      this.rig = { ...sceneRig(h.human.scene, h.clips), pelvisBelowHips: HUMANBASE_PELVIS_BELOW_HIPS };
+      this.model.add(h.human.root);
+      this.parkourFx.node.add(this.model);
+      this.root.add(this.parkourFx.node);
+      for (const clip of h.clips) { const a = h.action(clip.name); if (a) this.actions[clip.name] = a; }
+      this.gait = new GaitPose(this.model);
+      this.gait.setScene(h.human.scene);
+      const gait = this.gait;
+      h.human.addLayer({ id: "vo-gait-shape", order: 25, update: (dt) => gait.update(dt) });
+      const parkour = this.parkourFx;
+      parkour.setScene(h.human.scene);
+      h.human.addLayer({ id: "vo-parkour", order: 45, update: (dt) => parkour.update(dt) });
+    } else {
+      this.human = null;
+      this.triangles = source.triangles;
+      this.rig = sceneRig(source.scene, source.clips);
+      const body = cloneSkinned(source.scene) as THREE.Group;
+      this.model.add(body);
+      this.parkourFx.node.add(this.model);
+      this.root.add(this.parkourFx.node);
+      this.gait = new GaitPose(this.model);
+      this.gait.setScene(body);
+      this.parkourFx.setScene(body);
+      this.mixer = new THREE.AnimationMixer(body);
+      // EVERY clip the prototype carries, bound once. The prototypes are the same consolidated GLBs the
+      // hero avatar and the stress crowd use, so `walking` is there; hasClip is still asked before it is
+      // played, because an older asset without it must fall back rather than freeze mid-pose.
+      for (const clip of source.clips) this.actions[clip.name] = this.mixer.clipAction(clip);
+    }
     this.play(CLIP_IDLE, 0);
     const idle = this.actions[CLIP_IDLE];
     // Stagger the idle phase, or a roomful of people breathe in perfect lockstep — and, more to the
@@ -413,9 +557,142 @@ class CoworkerBody {
    *  air (a duplicate relay, a retry) or seated, which is the whole of the duplicate rule: the same
    *  no-double-jump test the local body applies, applied here. Returns whether it took. */
   jump(): boolean {
-    if (this.seatedIn !== null) return false;
-    return this.vertical.start();
+    if (this.seatedIn !== null || this.scooterRide) return false;
+    return this.vertical.start(this.groundY());
   }
+
+  /** PARKOUR V1 — A RELAYED DOUBLE JUMP. In the air from this body's own first jump: the second takeoff and one
+   *  flip. With no arc to build on (its jump was lost or arrived late): one ordinary arc and NO flip — never a
+   *  second hop, never a flip from the floor, never floating. Refused while seated or riding. */
+  doubleJump(): boolean {
+    if (this.seatedIn !== null || this.scooterRide) return false;
+    if (this.vertical.airJump()) { this.parkourFx.start("flip"); return true; }
+    if (this.vertical.airborne) return false;
+    return this.vertical.start(this.groundY());
+  }
+
+  /** PARKOUR V1 — A RELAYED LANDING ROLL: now if this body is down, or on its own landing if it is still in the
+   *  air (only for a short while — a roll is never held for a landing that is not coming). */
+  roll(ms?: number): boolean {
+    if (this.seatedIn !== null || this.scooterRide) return false;
+    this.rollMs = ms;
+    if (this.vertical.airborne) { this.pendingRoll = ROLL_WAIT_MS; return true; }
+    this.parkourFx.start("roll", ms);
+    return true;
+  }
+  /** the relayed roll's own duration (its published travel takes exactly this long) */
+  private rollMs: number | undefined;
+
+  /** PARKOUR V2 — A RELAYED VAULT OR MANTLE, `ageMs` into it. Its line is the walk published with it (already
+   *  replaying, or adopted when it arrives just after); its HEIGHTS are the traverser's (`rise` from the feet to the
+   *  end, `apex` above the start), but the end is honoured only where it is a real top under the body there — a
+   *  relayed number can never perch anybody. Refused while seated or riding. */
+  traverse(kind: TraverseKind, ms: number, rise: number, apex: number, ageMs = 0): boolean {
+    if (this.seatedIn !== null || this.scooterRide) return false;
+    const startY = this.vertical.airborne ? this.vertical.feet : this.groundY();
+    this.vertical.reset();
+    const to = this.replay ? this.replay.end : null;
+    const endY = this.validFeet(to ?? this.pos, startY + rise);
+    this.trav = { kind, elapsed: Math.max(0, ageMs), ms, from: this.pos, to, startY, endY, apex: Math.max(endY, Math.min(startY + apex, Math.max(startY, endY) + 40)), want: startY + rise };
+    this.parkourFx.start(kind, ms, ageMs);
+    return true;
+  }
+  /** is a relayed vault or mantle playing on this body? */
+  get traversing(): boolean { return this.trav !== null; }
+
+  /** PARKOUR V3 — A RELAYED LADDER OR ZIPLINE, `ageMs` after it started (`p0` of the way along when it started — a
+   *  ladder climbed back from part-way). A late joiner's snapshot arrives here too, mid-route: the body is put where
+   *  the route has it NOW and carries on, never waiting at an end. Refused while seated or riding. */
+  ride(r: TraversalRoute, dir: RouteDir, ageMs: number, p0 = 0): boolean {
+    if (this.seatedIn !== null || this.scooterRide) return false;
+    this.land();
+    const ms = routeDuration(r);
+    this.routeRun = { r, dir, elapsed: Math.min(ms, p0 * ms + Math.max(0, ageMs)), ms };
+    this.parkourFx.start(r.kind, ms, this.routeRun.elapsed);
+    this.stepRoute(0);
+    return true;
+  }
+  /** PARKOUR V3 — the traverser's route was cut short: this body goes to the same SAFE END (only ever one of the
+   *  route's own two ends — a relayed point is never trusted as a place to stand) */
+  haltRoute(end: "start" | "exit"): void {
+    const cur = this.routeRun;
+    if (!cur) return;
+    this.routeRun = null;
+    this.parkourFx.cancel();
+    this.parkourFx.setGrip(null);
+    this.ziplineHold = null;
+    const q = routeExit(cur.r, end === "exit" ? cur.dir : cur.dir === "a" ? "b" : "a");
+    this.root.position.set(q.x, q.y, q.z);
+  }
+  /** the hands (world) of this body's rig, or null */
+  hands(): [THREE.Vector3, THREE.Vector3] | null { return this.parkourFx.hands(); }
+  /** which route this body is on, and how far along (0..1) — the tests and the dev surface */
+  get routeState(): { id: string; u: number } | null { return this.routeRun ? { id: this.routeRun.r.id, u: Math.min(1, this.routeRun.elapsed / this.routeRun.ms) } : null; }
+
+  /** PARKOUR V3 — on a zipline: the trolley and the handle this frame (the world draws them), or null; the cable's
+   *  height over the feet line; and where this rig holds the grips */
+  ziplineHold: ReturnType<typeof ziplineHold> = null;
+  ziplineHang = 55;
+  gripProfile(): GripProfile { return this.parkourFx.gripProfile(); }
+  private stepRoute(dt: number): void {
+    const cur = this.routeRun!;
+    cur.elapsed += dt * 1000;
+    const u = Math.min(1, cur.elapsed / cur.ms);
+    const s = sampleRoute(cur.r, cur.dir, u);
+    // THE SAME HOLD the rider's own screen uses: the trolley, the handle, and these hands on it
+    const hold = ziplineHold(cur.r, cur.dir, u);
+    this.ziplineHold = u >= 1 ? null : hold;
+    this.parkourFx.setGrip(hold && u < 1 ? new THREE.Vector3(hold.cable.x, hold.cable.y, hold.cable.z) : null, hold ? ZiplineTrolley.axis(hold.yaw) : undefined, cur.r.grip, hold?.hang);
+    this.ziplineHang = cur.r.grip ?? 55;
+    this.root.position.set(s.p.x, s.p.y, s.p.z);
+    this.yaw = s.yaw;
+    this.root.rotation.set(0, s.yaw, 0);
+    this.freezeAt(CLIP_IDLE, 0);
+    if (u >= 1) {
+      this.routeRun = null;
+      if (this.parkourFx.active === cur.r.kind) this.parkourFx.cancel();
+      if (cur.r.kind === "zipline") this.parkourFx.start("land");
+      // standing at its far end: the height there is this body's own from now on
+      const end = routeExit(cur.r, cur.dir);
+      this.root.position.set(end.x, end.y, end.z);
+      this.elevation = end.y > (this.ground ? this.ground(end) : 0) + 0.5 ? end.y : null;
+      this.play(this.restingClip);
+    }
+  }
+
+  /** a published height, honoured only as the ground or a real top under `at` */
+  private validFeet(at: Vec2, feet: number): number {
+    const base = this.ground ? this.ground(at) : 0;
+    if (!Number.isFinite(feet) || feet <= base + 0.5) return base;
+    const top = this.topAt ? this.topAt(at, feet) : null;
+    return top !== null && top > base ? top : base;
+  }
+
+  /** one frame of a replayed traversal: x/z along its line (over the walk replay underneath it), and its height.
+   *  Returns the feet, or null when none is playing. */
+  private stepTraverse(dt: number): number | null {
+    const tr = this.trav;
+    if (!tr) return null;
+    tr.elapsed += dt * 1000;
+    const u = Math.min(1, tr.elapsed / Math.max(1, tr.ms));
+    if (tr.to) {
+      const s = traverseProgress(tr.kind, u);
+      this.root.position.x = tr.from.x + (tr.to.x - tr.from.x) * s;
+      this.root.position.z = tr.from.z + (tr.to.z - tr.from.z) * s;
+      const dx = tr.to.x - tr.from.x, dz = tr.to.z - tr.from.z;
+      if (Math.hypot(dx, dz) > 1e-3) { this.yaw = Math.atan2(dx, dz); this.root.rotation.set(0, this.yaw, 0); }
+    }
+    if (u >= 1) {
+      this.trav = null;
+      // ON THE TOP it climbed to, until a published height says otherwise (validated where it ends, as always)
+      if (tr.endY > (this.ground ? this.ground(this.pos) : 0) + 0.5) this.elevation = tr.endY;
+      return tr.endY;
+    }
+    return traverseHeight(tr.kind, u, tr.startY, tr.endY, tr.apex);
+  }
+
+  /** which tumble is playing on this body, for the tests and the dev surface */
+  get tumbling(): ParkourMove | null { return this.parkourFx.active; }
 
   /** Is this body in the air? Read by the dev surface and the tests. */
   get airborne(): boolean { return this.vertical.airborne; }
@@ -423,6 +700,12 @@ class CoworkerBody {
   /** Back on the floor NOW, with no landing frame, and the frozen pose released with it. Called from
    *  every transition out of "standing body" — see `vertical`. */
   private land(): void {
+    this.parkourFx.cancel();
+    this.parkourFx.setGrip(null);
+    this.ziplineHold = null;
+    this.pendingRoll = 0;
+    this.trav = null;
+    this.routeRun = null;
     if (!this.vertical.airborne && this.root.position.y === 0) return;
     this.vertical.reset();
     this.root.position.y = 0;
@@ -503,7 +786,24 @@ class CoworkerBody {
   /** Which way this body is looking, radians. Read-only, and read by the dev surface alone. */
   get facingYaw(): number { return this.yaw; }
   get pos(): Vec2 { return { x: this.root.position.x, z: this.root.position.z }; }
-  private groundY(): number { return this.ground ? this.ground(this.root.position) : 0; }
+  private groundY(): number { return this.groundRead().y; }
+  /** THE GROUND THIS BODY STANDS ON, and whether the published height and its own continuity disagree about it.
+   *  PARKOUR V1: on a furniture top only where the published height names a real top under the body now. PARKOUR V3
+   *  (with `supportAt`): the highest real surface at or a step above where its feet ARE — so it stays on the deck it
+   *  is on, climbs a ramp, and is caught by the first surface it falls to; the published height wins only where it
+   *  agrees, on a body not yet placed, or once it has disagreed for ELEVATION_ADOPT_MS. */
+  private groundRead(): { y: number; disagree: boolean } {
+    const pos = this.root.position;
+    const base = this.ground ? this.ground(pos) : 0;
+    const top = this.elevation !== null && this.topAt ? this.topAt(pos, this.elevation) : null;
+    const published = top !== null && top > base ? top : base;
+    if (!this.supportAt) return { y: published, disagree: false };
+    const feet = this.vertical.airborne ? this.vertical.feet : pos.y;
+    const s = this.supportAt(pos, feet + (this.vertical.airborne ? BODY.airClear : BODY.stepUp));
+    const own = s > base ? s : base;
+    if (!this.anchored || Math.abs(published - own) < 0.5) return { y: published, disagree: false };
+    return { y: this.disagreeMs >= ELEVATION_ADOPT_MS ? published : own, disagree: true };
+  }
 
   /** WHAT THE AUTOMATIC DOORS SEE OF THIS BODY: where it stands, and the route it is about to take.
    *
@@ -528,7 +828,8 @@ class CoworkerBody {
     const h = this.travelHeading;
     if (h === null) return { pos: this.pos, path: EMPTY_ROUTE };
     const p = this.pos;
-    return { pos: p, path: [{ x: p.x + Math.sin(h) * DOOR_LOOKAHEAD, z: p.z - Math.cos(h) * DOOR_LOOKAHEAD }] };
+    // (sin h, cos h): the travel heading's own convention — see player/PlayerMode doorLookahead (PARKOUR V2 fix)
+    return { pos: p, path: [doorLookahead(p, h)] };
   }
   /** The movement this body has been given, running or finished, so a re-push of the same one is
    *  recognised and ignored. See `playedId`. */
@@ -539,6 +840,9 @@ class CoworkerBody {
    *  movement. The body is not first snapped back to the origin: the replay's own fast-forward puts it
    *  where the walk currently is, which for a redirect is about where the body already stood. */
   beginWalk(movementId: string, worldPath: readonly Vec2[], durationMs: number, elapsedMs: number, pacing: Vo3dWalkPacing = "eased"): void {
+    // ON A SCOOTER the pose stream is the truth; a walk that turns up meanwhile is the step off, held for
+    // the moment the ride ends (afterRide)
+    if (this.scooterRide) { this.afterRide = { kind: "walk", args: [movementId, [...worldPath], durationMs, elapsedMs, pacing], at: performance.now() }; return; }
     // A walk stands a seated body up first — V1 clears the seat on every walk_started, and so does this.
     if (this.seatedIn !== null) this.standUp();
     this.replay = new ReplayWalk(movementId, worldPath, durationMs, elapsedMs, pacing);
@@ -551,9 +855,30 @@ class CoworkerBody {
     this.coastMs = 0;
     // The clip is a property of the MOVEMENT — its mean speed — chosen once, so an eased walk does not
     // break into a run at the peak of its own curve. A prototype without a run clip walks faster instead.
-    this.locomotion = locomotionClip(this.replay.meanSpeed >= RUN_FROM_SPEED, this.actions[CLIP_RUN] !== undefined);
+    this.locomotion = locomotion(this.runtime, this.replay.meanSpeed, this.replay.meanSpeed >= RUN_FROM_SPEED, this.actions[CLIP_RUN] !== undefined, null).clip;
     const at = this.replay.position;
-    this.root.position.set(at.x, 0, at.z);
+    // (PARKOUR V3: the height is kept — the body's own continuity decides it; a placement re-anchors, see snapTo)
+    this.root.position.set(at.x, this.root.position.y, at.z);
+    // PARKOUR V2 — a walk arriving just after a traversal's relay is ITS OWN walk, ADOPTED as its line (the relay may
+    // have found the previous leg still replaying, so whatever line it took is replaced). The traverser's keys are
+    // locked for the whole move (≥ 450 ms), so nothing newer can come from them that soon. Any later walk is newer
+    // movement, and newer movement always wins: the traversal stops where it is.
+    const tr = this.trav;
+    if (tr) {
+      if (tr.elapsed < TRAVERSE_ADOPT_MS) {
+        tr.from = this.pos;
+        tr.to = this.replay.end;
+        tr.endY = this.validFeet(this.replay.end, tr.want);
+        tr.apex = Math.max(tr.apex, tr.endY);
+      } else {
+        this.trav = null;
+        this.parkourFx.cancel();
+        // cut off mid-move: down from where it was — a real fall where this world knows its surfaces (PARKOUR V3), the
+        // ground at once where it does not (V2's rule)
+        if (this.supportAt) this.vertical.fall(this.root.position.y);
+        else this.root.position.y = this.groundY();
+      }
+    }
   }
 
   /** PHASE 6C — SIT THIS BODY IN `anchor`, at the pose the world resolved for it. The root is put where
@@ -562,6 +887,7 @@ class CoworkerBody {
    *  and the seated clip plays. Any replay, queued turn or leg grace is dropped: the seated arrival is the
    *  authoritative account of where this person is. Returns true when anything changed. */
   sitAt(anchor: string, pose: SeatAnchorPose): boolean {
+    if (this.scooterRide) return false;
     const root = pose.kind === "seat"
       ? deskSeatedRootForRig(this.rig, pose.contact, pose.yaw)
       : seatedRootForRig(this.rig, pose.contact, pose.yaw, pose.sink ?? 0);
@@ -574,6 +900,7 @@ class CoworkerBody {
     this.targetYaw = null;
     this.coastMs = 0;
     this.seatedIn = anchor;
+    if (this.seatedWork) this.seatedWork.atWorkstation = pose.kind === "seat" ? pose.workstation === true : false;
     this.root.position.copy(root);
     this.yaw = pose.yaw;
     this.root.rotation.set(0, pose.yaw, 0);
@@ -612,6 +939,7 @@ class CoworkerBody {
    *    seam, short way — glide, and take the yaw when the glide lands.
    *    anything else   — snap. An interrupted walk, a reconnect correction, or an ordinary placement. */
   reconcileTo(at: Vec2, yaw: number): boolean {
+    if (this.scooterRide) { this.afterRide = { kind: "glide", at: { ...at }, yaw }; return false; }
     const d = dist(this.pos, at);
     const resolvesWalk = this.playedId !== null || this.settling;
     if (d <= RECONCILE_EPSILON) return this.settle(at, yaw, resolvesWalk);
@@ -658,7 +986,7 @@ class CoworkerBody {
   /** Position only. True when it changed. */
   private moveTo(at: Vec2): boolean {
     if (this.root.position.x === at.x && this.root.position.z === at.z) return false;
-    this.root.position.set(at.x, 0, at.z);
+    this.root.position.set(at.x, this.root.position.y, at.z);
     return true;
   }
 
@@ -672,6 +1000,8 @@ class CoworkerBody {
   private snapTo(at: Vec2, yaw: number): boolean {
     if (this.root.position.x === at.x && this.root.position.z === at.z && this.yaw === yaw) return false;
     this.root.position.set(at.x, 0, at.z);
+    // PARKOUR V3 — a PLACEMENT, not a step: the height is taken afresh from what was published for this spot
+    this.anchored = false;
     this.yaw = yaw;
     this.root.rotation.set(0, yaw, 0);
     return true;
@@ -692,18 +1022,104 @@ class CoworkerBody {
    *  Crowd's member uses. Returns TRUE when the body's transform changed, which is what the caller turns
    *  into a cheap dynamic shadow invalidation (a walking coworker costs the composite pass, never the
    *  static redraw). */
+  /** S2 — MOUNT / PLACE / DISMOUNT. A pose puts the body on the deck for this frame (idle frozen, hands on
+   *  the grips, leaning with it — the local rider's own recipe, player/PlayerMode startRide); null gets it
+   *  off, back to its resting clip where it stands, for the rider's own movement feed to take it from there. */
+  setScooterRide(ride: CoworkerScooterRide | null): void {
+    if (ride && !this.scooterRide) {
+      this.gait.drop();
+      if (this.seatedIn !== null) this.standUp();
+      this.replay = null; this.settling = false; this.coastMs = 0; this.targetYaw = null; this.settleYaw = null; this.travelHeading = null;
+      this.land();
+      this.freezeAt(CLIP_IDLE, 0);
+      if (!this.riderPose) {
+        this.riderPose = new RiderPose(this.model, RIDER_GRIPS);
+        if (this.human) {
+          this.riderPose.setScene(this.human.scene);
+          const pose = this.riderPose;
+          this.human.addLayer({ id: "vo-scooter-rider", order: 30, update: (dt) => pose.update(dt) });
+        } else this.riderPose.setScene(this.model.children[0] ?? null);
+        const rider = this.riderPose;
+        this.crashPose = new CrashPose(this.model, () => rider.drop());
+        if (this.human) {
+          const crash = this.crashPose;
+          crash.setScene(this.human.scene);
+          this.human.addLayer({ id: "vo-scooter-crash", order: 40, update: (dt) => crash.update(dt) });
+        } else this.crashPose.setScene(this.model.children[0] ?? null);
+      }
+      this.riderPose.set(ride.rider !== false);
+    } else if (!ride && this.scooterRide) {
+      this.riderPose?.set(false);
+      this.riderPose?.setLean(0);
+      this.riderPose?.setPitch(0);
+      this.crashPose?.set(null);
+      const idle = this.actions[CLIP_IDLE];
+      if (idle) idle.timeScale = 1;
+      this.root.position.y = this.groundY();
+      this.root.rotation.set(0, this.yaw, 0); // upright again (a fall tipped it)
+      this.play(this.restingClip);
+      this.scooterRide = null;
+      const next = this.afterRide;
+      this.afterRide = null;
+      if (next?.kind === "walk") { const [id, path, ms, el, pacing] = next.args; this.beginWalk(id, path, ms, el + (performance.now() - next.at), pacing); }
+      else if (next?.kind === "glide") this.reconcileTo(next.at, next.yaw);
+      return;
+    }
+    if (ride && !this.scooterRide) this.afterRide = null;
+    if (ride && this.scooterRide) this.riderPose?.set(ride.rider !== false); // riding → falling off, same body
+    this.scooterRide = ride ? { ...ride } : null;
+  }
+
+  get ridingScooter(): boolean { return this.scooterRide !== null; }
+
   update(dt: number): boolean {
+    if (this.scooterRide) {
+      const r = this.scooterRide;
+      this.root.position.set(r.x, r.y, r.z);
+      this.yaw = r.yaw;
+      this.root.rotation.set(0, r.yaw, 0);
+      this.crashPose?.set(r.crash ?? null);
+      // a body without the standard chain: the whole of it tipped about its hips
+      if (r.crash && !this.crashPose?.rigged) {
+        this.root.quaternion.copy(r.crash.q);
+        this.root.position.set(r.crash.hip.x, r.crash.hip.y, r.crash.hip.z).sub(new THREE.Vector3(0, CRASH.HIP, 0).applyQuaternion(r.crash.q));
+      }
+      this.riderPose?.setLean(r.lean);
+      this.riderPose?.setPitch(r.pitch);
+      this.tick(dt);
+      return true;
+    }
+    // (the gait's shape is the replay's to set, frame by frame; standing, seated or coasting it fades out)
+    this.gait.set(null);
     if (this.seatedIn !== null) {
       // Seated: the clip breathes, the root does not move. Nothing below may play idle over the sit.
-      this.mixer.update(dt);
+      if (this.parkourFx.active) this.parkourFx.cancel();
+      this.tick(dt);
       return false;
+    }
+    // PARKOUR V3 — A LADDER OR A ZIPLINE, replayed: the route owns the body (its walk keeps advancing underneath, so
+    // whatever was published meanwhile is current when the route lets go)
+    if (this.routeRun) {
+      if (this.replay) this.replay.advance(dt * 1000);
+      this.stepRoute(dt);
+      this.tick(dt);
+      return true;
     }
     let moved = false;
     // THE VERTICAL HALF, stepped before the horizontal one and written after it. Everything below
     // keeps setting the root's x/z (and a y of 0) exactly as it did; the single write at the bottom is
     // what puts this body back in the air afterwards, so no branch here has to know a jump exists.
-    const landed = this.vertical.update(dt);
+    const landed = this.vertical.update(dt, this.groundY());
     const airborne = this.vertical.airborne;
+    if (this.pendingRoll > 0) {
+      if (landed) { this.pendingRoll = 0; this.parkourFx.start("roll", this.rollMs); }
+      else if ((this.pendingRoll -= dt * 1000) <= 0) this.pendingRoll = 0;
+    }
+    if (landed && this.parkourFx.active === "flip") this.parkourFx.hurry();
+    // the same landing the jumper's own screen plays: knees and hips give after a real fall (a double jump, a drop)
+    // PARKOUR V3 — a fall too big for a roll is a HARD landing on every screen, decided from this body's own arc
+    if (landed && this.vertical.lastFall >= HARD_FALL) this.parkourFx.start("hard");
+    if (landed && !this.parkourFx.active && this.vertical.lastFall >= LAND_ABSORB_FALL) this.parkourFx.start("land");
     if (landed) {
       // Landing restores the frozen clip's rate ONCE, before the branches below choose what to play —
       // the locomotion branch overwrites it anyway, the resting branch does not.
@@ -713,19 +1129,30 @@ class CoworkerBody {
     if (this.replay) {
       const step = this.replay.advance(dt * 1000);
       moved = step.travelled > 1e-6;
-      this.root.position.set(step.pos.x, 0, step.pos.z);
+      this.root.position.set(step.pos.x, this.root.position.y, step.pos.z);
       if (step.heading !== null) {
         this.travelHeading = step.heading;
         this.yaw = stepAngle(this.yaw, step.heading, TURN_RATE * dt);
         this.root.rotation.set(0, this.yaw, 0);
         moved = true;
       }
-      if (moved && !airborne) {
+      // THEIR GAIT'S SHAPE, as the local body draws its own: a sprint leans and opens up with the speed; a leg they
+      // braked in ("decel") is the skid — the braking pose over the idle — and a turn at speed banks
+      const speedNow = step.travelled / Math.max(dt, 1e-4);
+      const decel = this.replay.pacing === "decel" && this.replay.meanSpeed > 60;
+      if (decel && !this.wasDecel) this.skidLead = this.skidLead === 1 ? -1 : 1;
+      this.wasDecel = decel;
+      const yawRate = dt > 0 ? Math.atan2(Math.sin(this.yaw - this.gaitYaw), Math.cos(this.yaw - this.gaitYaw)) / dt : 0;
+      this.gaitYaw = this.yaw;
+      const sprint = Math.max(0, Math.min(1, (this.replay.meanSpeed - 80) / (PLAYER_SPRINT_SPEED - 80)));
+      this.gait.set(airborne || !moved ? null : { sprint: decel ? 0 : sprint, bank: Math.max(-0.16, Math.min(0.16, (yawRate * speedNow / 1100) * 0.16)), brake: decel ? 1 : 0, lead: this.skidLead });
+      if (moved && !airborne && decel) this.play(this.restingClip, 0.15);
+      else if (moved && !airborne) {
         this.play(this.locomotion);
         const action = this.actions[this.locomotion];
         // Rate from the ground ACTUALLY covered this frame, against the speed THIS clip was authored for,
         // so a replay that is slower or faster than the clip still lands its feet instead of skating.
-        if (action) action.timeScale = locomotionRate(this.locomotion, step.travelled / Math.max(dt, 1e-4));
+        if (action) action.timeScale = gaitRate(this.runtime, this.locomotion, speedNow / (this.locomotion === CLIP_RUN ? sprintStride(sprint) : 1), this.actions[CLIP_RUN] !== undefined);
       }
       if (this.replay.done) {
         // The route has run out. A reconciliation glide already knew its yaw; a peer walk waits for the
@@ -760,19 +1187,46 @@ class CoworkerBody {
       // applied. `play` is guarded on the current clip, so re-asserting it per frame costs nothing.
       if (!airborne) this.play(this.restingClip);
     }
-    if (airborne) {
+    // PARKOUR V2 — a replayed vault or mantle owns the line and the height while it plays
+    const travY = this.stepTraverse(dt);
+    if (travY !== null) this.gait.set(null);
+    // PARKOUR V1 — a flip or a roll is posed over the NEUTRAL stance (the idle's first frame), so the tuck is
+    // symmetric rather than built on a frozen stride; the layer gives the clip back when it ends
+    const fx = this.parkourFx.active;
+    const tumbling = fx === "flip" || fx === "roll" || fx === "vault" || fx === "mantle";
+    if (tumbling) this.freezeAt(CLIP_IDLE, 0);
+    if (travY !== null) {
+      this.root.position.y = travY;
+      moved = true;
+    } else if (airborne) {
       // IN THE AIR, over whatever the branches above decided the body was doing horizontally — the
       // walk replay keeps advancing x/z underneath, which is what makes a jump mid-walk read as a
       // jump mid-walk rather than a hop from a standstill.
-      this.freezeAt(CLIP_WALK, AIRBORNE_POSE_PHASE);
-      this.root.position.y = this.groundY() + this.vertical.height;
+      if (!tumbling) this.freezeAt(CLIP_WALK, AIRBORNE_POSE_PHASE);
+      // ABSOLUTE (PARKOUR V1): the arc's own feet, so a jump onto a sofa rises from the floor and lands on the
+      // cushion instead of popping up by the cushion's height the moment its outline is crossed
+      this.root.position.y = this.vertical.feet;
       moved = true;
     } else {
-      // ON THE GROUND the replay has put them on — flat indoors, the campus's own heights outside — so a
-      // peer on the lawn stands on the lawn rather than on the office floor's datum
-      const y = this.groundY();
-      if (this.root.position.y !== y) { this.root.position.y = y; moved = true; } // also the landing frame
+      // ON THE GROUND the replay has put them on — flat indoors, the campus's own heights outside, a furniture
+      // top they are standing on — so a peer on the lawn stands on the lawn rather than on the office floor's
+      // datum. A small change is eased (a step onto a top, a ramp); the landing frame and a relocation snap.
+      const read = this.groundRead();
+      this.disagreeMs = read.disagree ? this.disagreeMs + dt * 1000 : 0;
+      const y = read.y;
+      const was = this.root.position.y;
+      if (this.supportAt && this.anchored && was - y > FALL_DROP && travY === null) {
+        // PARKOUR V3 — WALKED OFF AN EDGE: a real fall, down to whatever catches it (a lower deck, the floor)
+        this.vertical.fall(was);
+        moved = true;
+      } else if (was !== y) {
+        const d = y - was;
+        this.root.position.y = landed || Math.abs(d) < 0.01 || Math.abs(d) > 40 ? y : was + d * Math.min(1, dt * GROUND_EASE);
+        moved = true;
+      }
     }
+    this.anchored = true;
+    if (this.parkourFx.active) moved = true;
     if (this.targetYaw !== null) {
       // The last beat of a walk: onto the yaw the arrival asked for, at the rate the body turns.
       const next = stepAngle(this.yaw, this.targetYaw, TURN_RATE * dt);
@@ -782,8 +1236,16 @@ class CoworkerBody {
       this.root.rotation.set(0, this.yaw, 0);
       moved = true;
     }
-    this.mixer.update(dt);
+    this.tick(dt);
     return moved;
+  }
+
+  get runtime(): "humanbase" | "legacy-glb" { return this.human ? "humanbase" : "legacy-glb"; }
+
+  /** advance the animation: a legacy clone's own mixer, or the HumanBase runtime (pose restore → mixer → layers → face) */
+  private tick(dt: number): void {
+    if (this.human) { this.seatedWork?.update(dt, this.seatedIn !== null && this.current === CLIP_SIT); this.human.update(dt); }
+    else { this.mixer?.update(dt); this.gait.update(dt); this.riderPose?.update(dt); this.crashPose?.update(dt); this.parkourFx.update(dt); }
   }
 
   /** Stop replaying without moving the body — for a walk whose person left the roster mid-stride. */
@@ -809,8 +1271,8 @@ class CoworkerBody {
       this.root.remove(this.label);
       this.label = null;
     }
-    this.mixer.stopAllAction();
-    this.mixer.uncacheRoot(this.root);
+    if (this.human) { this.seatedWork?.dispose(); this.human.dispose(); }
+    else if (this.mixer) { this.mixer.stopAllAction(); this.mixer.uncacheRoot(this.root); }
     this.root.removeFromParent();
     this.root.clear();
   }
@@ -849,6 +1311,9 @@ export type CoworkerPosition = {
   movementId: string | null;
   /** the clip playing — idle, walking, running or seated — for telling a position stutter from an animation one */
   clip: string;
+  /** the character and which body runtime draws it (HumanBase Phase 2: a peer's Bon must read "humanbase") */
+  avatarId: string;
+  runtime: "humanbase" | "legacy-glb";
   /** PHASE 6C — the seat anchor this body is seated in, or null */
   seat: string | null;
   /** is this body in the air right now (a relayed jump) — for telling a replicated jump from a
@@ -860,7 +1325,8 @@ export type CoworkerPosition = {
  *  `contact` is the cushion point in world space; `yaw` the chair's own seated rotation; `kind` selects
  *  the pose formula (a movable desk chair and fixed lounge seating land the pelvis differently — see
  *  interact/seatContact); `sink` is the lounge cushion's compression. */
-export type SeatAnchorPose = { contact: THREE.Vector3; yaw: number; kind: "seat" | "lounge"; sink?: number };
+/** `workstation`: the seat is a work desk's chair (a seated HumanBase body types there) */
+export type SeatAnchorPose = { contact: THREE.Vector3; yaw: number; kind: "seat" | "lounge"; sink?: number; workstation?: boolean };
 
 export interface CoworkersDeps {
   parent: THREE.Object3D;
@@ -870,13 +1336,22 @@ export interface CoworkersDeps {
   radius: number;
   /** the ground under a world point (world/exteriorGround outside, 0 indoors); omitted = a flat world */
   groundY?: (p: Vec2) => number;
+  /** PARKOUR V1 — the real standable top at a world point that matches a published feet height (world/standables),
+   *  or null. The only way a relayed `feet` hint ever lifts anybody: it must name a top that is really there. */
+  topAt?: (p: Vec2, feet: number) => number | null;
+  /** PARKOUR V3 — the highest real surface at a point at or below a height (world/standables topUnder). With it every
+   *  body keeps its own vertical continuity: stacked decks, ramps, falling off an edge. Absent = V1's rule exactly. */
+  supportAt?: (p: Vec2, maxTop: number) => number;
+  /** PARKOUR V3 — the declared traversal route with this id (world/traversalRoutes), or undefined */
+  routes?: (id: string) => TraversalRoute | undefined;
   /** V1 frame point -> built V2 world point, room shifts applied */
   toWorld: (p: Vec2) => Vec2;
   lod?: AvatarLod;
   /** PHASE 6C — resolve a seat anchor id to the pose a body takes in it, or null for an anchor this world
    *  has no chair for. The world implements it over its own chair views (and tucks the chair in while it
    *  is occupied, as the local sit does); this module only asks. Absent = nobody can be drawn seated. */
-  seatAnchor?: (id: string) => SeatAnchorPose | null;
+  /** `humanBase`: the body sitting is the shared HumanBase body (a work desk's chair is pulled up for it) */
+  seatAnchor?: (id: string, humanBase?: boolean) => SeatAnchorPose | null;
   /** PHASE 6C — the anchor is no longer occupied by the body that held it; the world returns the chair. */
   releaseSeat?: (id: string) => void;
   /** WHAT KIND of change a sync produced, because the two cost the renderer different things.
@@ -943,7 +1418,7 @@ export class Coworkers {
 
   constructor(deps: CoworkersDeps) {
     this.deps = deps;
-    this.placer = new CoworkerPlacer(deps.toWorld, deps.canStand, deps.radius);
+    this.placer = new CoworkerPlacer(deps.toWorld, deps.canStand, deps.radius, deps.topAt ?? null);
     this.group.name = "coworkers";
     deps.parent.add(this.group);
     this.riderGroup.name = "lift-riders";
@@ -957,8 +1432,8 @@ export class Coworkers {
   async addRider(email: string, avatarId: string, displayName: string, at: Vec2, yaw: number): Promise<boolean> {
     const gen = this.riderGen;
     if (this.riders.has(email)) return false;
-    const proto = await prototypeFor(avatarId, this.deps.lod ?? 1).catch(() => null);
-    if (!proto || this.disposed || gen !== this.riderGen || this.riders.has(email)) return false;
+    const proto = await bodySourceFor(avatarId, this.deps.lod ?? 1).catch(() => null);
+    if (!proto || this.disposed || gen !== this.riderGen || this.riders.has(email)) { discardSource(proto); return false; }
     // FLAT: the rider group travels with the lift car, so its bodies stand in the car's frame, not the campus's
     const body = new CoworkerBody(proto, displayName, at, yaw, phaseFor(email));
     body.setLabelVisible(false);
@@ -979,6 +1454,15 @@ export class Coworkers {
   realPointOf(email: string): Vec2 | null {
     const body = this.bodies.get(email);
     return body ? { ...body.pos } : null;
+  }
+
+  /** S2 — put this person's REAL body on a scooter for this frame (or, with null, take it off). Returns
+   *  whether there is a body to drive — none when they are not drawn here (another floor, the Cave). */
+  setScooterRide(email: string, ride: CoworkerScooterRide | null): boolean {
+    const body = this.bodies.get(email);
+    if (!body) return false;
+    body.setScooterRide(ride);
+    return true;
   }
 
   /** Stand a rider somewhere else at once (the seal: cabin → destination lift bay). */
@@ -1027,6 +1511,8 @@ export class Coworkers {
         yaw: Math.round(body.facingYaw * 1000) / 1000,
         movementId: body.movementId?.slice(0, 8) ?? null,
         clip: body.clip,
+        avatarId: body.avatarId,
+        runtime: body.runtime,
         source: this.wanted.get(email)?.coworker.posSource ?? "desk",
         seat: body.seatedIn,
         airborne: body.airborne,
@@ -1107,7 +1593,7 @@ export class Coworkers {
         // A character whose GLB will not load must not take the world down with it, or one bad asset
         // costs every other coworker too. The failure is swallowed to a null and that person is simply
         // absent, which is the same honest absence a missing registry entry produces.
-        prototypeFor(p.coworker.avatarId, lod).catch((e: unknown) => {
+        bodySourceFor(p.coworker.avatarId, lod).catch((e: unknown) => {
           console.warn(`vo3d: could not load the 3D character for ${p.coworker.displayName}`, e);
           return null;
         }),
@@ -1115,7 +1601,7 @@ export class Coworkers {
     );
     // The world may have been disposed, or a newer POPULATION roster may have arrived, while those were
     // in flight. The newer batch owns `loading` now, so this one clears nothing on its way out.
-    if (this.disposed || generation !== this.generation) return;
+    if (this.disposed || generation !== this.generation) { protos.forEach(discardSource); return; }
 
     let added = false;
     for (let i = 0; i < additions.length; i++) {
@@ -1125,12 +1611,17 @@ export class Coworkers {
       // THE NEWEST SPOT, not the one this batch captured: position syncs have been running freely while
       // this downloaded. A person who dropped off the roster in the meantime has no entry and is skipped.
       const spot = this.wanted.get(email);
-      if (!spot || this.bodies.has(email)) continue;
+      if (!spot || this.bodies.has(email)) { discardSource(proto); continue; }
       const { coworker, pos } = spot;
       // Deterministic per person rather than random: the same viewer reloading, and two viewers looking
       // at the same room, see the same stagger instead of a fresh shuffle.
       const phase = phaseFor(coworker.email);
-      const body = new CoworkerBody(proto, coworker.displayName, pos, coworker.yaw ?? FACING_YAW[coworker.facing], phase, this.deps.groundY ?? null);
+      const body = new CoworkerBody(proto, coworker.displayName, pos, coworker.yaw ?? FACING_YAW[coworker.facing], phase, this.deps.groundY ?? null, this.deps.topAt ?? null, this.deps.supportAt ?? null);
+      body.elevation = coworker.feet ?? null;
+      // PARKOUR V3 — somebody already on a route when this viewer first draws them: picked up where it has them now
+      const tr = coworker.traversal;
+      const tr0 = tr ? this.deps.routes?.(tr.routeId) : undefined;
+      if (tr && tr0) { body.routeKey = tr.key; body.ride(tr0, tr.dir, tr.elapsedMs, tr.p0); }
       // A body cloned after the host took over the nameplates must not bring a sprite one back with it.
       body.setLabelVisible(this.labelsVisible);
       body.setConversationClip(this.conversationClips.get(email) ?? null);
@@ -1152,7 +1643,7 @@ export class Coworkers {
       } else if (coworker.seat) {
         // PHASE 6C — a newcomer may already be SEATED (the first sync of a session finds most people
         // wherever V1 last saw them, chairs included).
-        const pose = seatedPose(this.deps.seatAnchor?.(coworker.seat) ?? null, coworker.yaw);
+        const pose = seatedPose(this.deps.seatAnchor?.(coworker.seat, body.runtime === "humanbase") ?? null, coworker.yaw);
         if (pose) body.sitAt(coworker.seat, pose);
       }
       this.group.add(body.root);
@@ -1192,6 +1683,14 @@ export class Coworkers {
     for (const [email, body] of this.bodies) {
       const spot = this.wanted.get(email);
       if (!spot) continue;
+      body.elevation = spot.coworker.feet ?? null;
+      // PARKOUR V3 — A LATE JOINER (or a reconnect) sees a route in progress where it is now, once per relay
+      const tr = spot.coworker.traversal;
+      if (tr && body.routeKey !== tr.key) {
+        body.routeKey = tr.key;
+        const r = this.deps.routes?.(tr.routeId);
+        if (r) { body.ride(r, tr.dir, tr.elapsedMs, tr.p0); moved = true; }
+      }
       const walk = spot.coworker.walk;
       if (walk) {
         if (body.movementId !== walk.movementId) {
@@ -1207,7 +1706,7 @@ export class Coworkers {
       // cushion is used. An anchor this world cannot resolve falls through to the standing rule.
       const seat = spot.coworker.seat;
       if (seat) {
-        const pose = seatedPose(this.deps.seatAnchor?.(seat) ?? null, spot.coworker.yaw);
+        const pose = seatedPose(this.deps.seatAnchor?.(seat, body.runtime === "humanbase") ?? null, spot.coworker.yaw);
         if (pose) {
           if (body.seatedIn !== seat || Math.abs(wrapAngle(body.facingYaw - pose.yaw)) > YAW_EPSILON) {
             if (body.seatedIn !== null) this.deps.releaseSeat?.(body.seatedIn);
@@ -1239,7 +1738,7 @@ export class Coworkers {
     let moved = false;
     for (const body of this.bodies.values()) {
       if (body.seatedIn === null || (anchor !== undefined && body.seatedIn !== anchor)) continue;
-      const pose = this.deps.seatAnchor?.(body.seatedIn) ?? null;
+      const pose = this.deps.seatAnchor?.(body.seatedIn, body.runtime === "humanbase") ?? null;
       if (pose && body.sitAt(body.seatedIn, pose)) moved = true;
     }
     if (moved) this.deps.onChanged?.("position");
@@ -1419,13 +1918,86 @@ export class Coworkers {
    *  Returns true when a body actually took off — false for somebody this world has no body for (not
    *  rendered, still loading, or off the roster), for a stale relay, for a duplicate while they are
    *  already in the air, and for a seated body. */
-  jump(email: string, ageMs = 0): boolean {
+  jump(email: string, ageMs = 0, at?: number, seq?: number): boolean {
     if (ageMs > JUMP_STALE_MS) return false;
-    const body = this.bodies.get(email.trim().toLowerCase());
+    const key = email.trim().toLowerCase();
+    if (!this.inOrder(key, at, seq)) return false;
+    const body = this.bodies.get(key);
     if (!body) return false;
     const took = body.jump();
     if (took) this.deps.onChanged?.("position");
     return took;
+  }
+
+  /** PARKOUR V1 — SOMEBODY DOUBLE-JUMPED (with its flip) OR ROLLED ON LANDING. Same staleness rule as `jump`,
+   *  each against its own length, and the same per-sender order: a relay older than the last one applied for
+   *  that person, or the same one again, is dropped — so a late first jump can never add a hop after its
+   *  double, and nothing plays twice. A reconnect replays none of these (they are never in a snapshot). */
+  parkour(email: string, kind: "double" | "roll" | "vault" | "mantle", ageMs = 0, at?: number, seq?: number, ms?: number, rise = 0, apex = 0): boolean {
+    // PARKOUR V2 — a vault or a mantle is stale once it would have finished (its own duration)
+    const life = kind === "double" ? DOUBLE_STALE_MS : kind === "roll" ? ms ?? ROLL_STALE_MS : ms ?? PARKOUR_MS[kind];
+    if (ageMs > life) return false;
+    const key = email.trim().toLowerCase();
+    if (!this.inOrder(key, at, seq)) return false;
+    const body = this.bodies.get(key);
+    if (!body) return false;
+    const took = kind === "double" ? body.doubleJump()
+      : kind === "roll" ? body.roll(ms)
+      : body.traverse(kind, ms ?? PARKOUR_MS[kind], rise, apex, ageMs);
+    if (took) this.deps.onChanged?.("position");
+    return took;
+  }
+
+  /** PARKOUR V3 — SOMEBODY STARTED A ROUTE (a ladder, the zipline): same ordering and identity as every parkour relay;
+   *  the route must be one this world declares, and a relay older than the route's own remaining length is over
+   *  everywhere else and dropped. `p0`: how far along it started. */
+  route(email: string, routeId: string, dir: RouteDir, ageMs = 0, at?: number, seq?: number, p0 = 0): boolean {
+    const r = this.deps.routes?.(routeId);
+    if (!r || (dir === "b" && !r.twoWay)) return false;
+    if (ageMs > routeDuration(r) * (1 - p0) + 250) return false;
+    const key = email.trim().toLowerCase();
+    // the same relay a late joiner's snapshot already applied (it carries the relay's own identity) is not replayed
+    const rk = `${at ?? 0}:${seq ?? 0}`;
+    if (this.bodies.get(key)?.routeKey === rk) return false;
+    if (!this.inOrder(key, at, seq)) return false;
+    const body = this.bodies.get(key);
+    if (!body) return false;
+    body.routeKey = rk;
+    const took = body.ride(r, dir, ageMs, p0);
+    if (took) this.deps.onChanged?.("position");
+    return took;
+  }
+  /** PARKOUR V3 — every peer riding a zipline right now, with their trolley's hold (the world draws the trolleys) */
+  ziplineHolds(): { hold: NonNullable<ReturnType<typeof ziplineHold>>; hang: number; grip: GripProfile }[] {
+    const out: { hold: NonNullable<ReturnType<typeof ziplineHold>>; hang: number; grip: GripProfile }[] = [];
+    for (const b of this.bodies.values()) if (b.ziplineHold) out.push({ hold: b.ziplineHold, hang: b.ziplineHang, grip: b.gripProfile() });
+    return out;
+  }
+  /** the hands of a peer's body (world), for QA */
+  handsOf(email: string): [THREE.Vector3, THREE.Vector3] | null { return this.bodies.get(email.trim().toLowerCase())?.hands() ?? null; }
+
+  /** PARKOUR V3 — the traverser's route was cut short; they are at its start or its exit */
+  routeHalt(email: string, end: "start" | "exit", at?: number, seq?: number): boolean {
+    const key = email.trim().toLowerCase();
+    if (!this.inOrder(key, at, seq)) return false;
+    const body = this.bodies.get(key);
+    if (!body?.routeState) return false;
+    body.haltRoute(end);
+    this.deps.onChanged?.("position");
+    return true;
+  }
+
+  /** the last relayed action applied per sender: server time, then the sender's own sequence */
+  private readonly lastAction = new Map<string, { at: number; seq: number }>();
+  /** Is this relay newer than the last one applied for this sender? Relays without a server time (the dev
+   *  surface, older callers) are always taken, exactly as before. */
+  private inOrder(key: string, at?: number, seq?: number): boolean {
+    if (typeof at !== "number" || !Number.isFinite(at)) return true;
+    const s = typeof seq === "number" && Number.isFinite(seq) ? seq : 0;
+    const last = this.lastAction.get(key);
+    if (last && (at < last.at || (at === last.at && s <= last.seq))) return false;
+    this.lastAction.set(key, { at, seq: s });
+    return true;
   }
 
   /** How many bodies are in the air right now. A count, never who — the same redaction the rest of

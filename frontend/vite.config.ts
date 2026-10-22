@@ -123,6 +123,14 @@ export default defineConfig(({ mode }) => ({
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/avatar-api/, ""),
       },
+      // HumanBase Studio (scripts/avatar-pipeline/human-base/studio/server.mjs, 127.0.0.1:8094) — DEV-ONLY Character Studio
+      // bridge. The browser calls /hb-studio/api/self/* same-origin with its own VO session token; the Studio resolves the
+      // person from VO's backend (/api/v1/auth/me), never from the client. Not part of any production build.
+      "/hb-studio": {
+        target: "http://127.0.0.1:8094",
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/hb-studio/, ""),
+      },
     },
   },
   test: {

@@ -18,7 +18,7 @@ import { toeKick } from "./detail-props";
 import { tagSurface } from "../editor/surfaces";
 import { tiledFloor } from "./tile";
 import { credenzaRun, glassRun, slatPanel } from "./frontbar";
-import { book, laptop, monitor, mug, smallPot } from "./props";
+import { book, monitor, mug, smallPot, laptopAt } from "./props";
 import { brassDeskLamp, deskMat, deskOrganiser, deskPlant, nameplate } from "./exec-furniture";
 import { STRUCT } from "../rooms/reception";
 import { emissiveMat, glowMat, mat, metal, uiScreenMat } from "../render/Materials";
@@ -227,10 +227,12 @@ function executiveDesk(spec: typeof DESK_L, mirrored: boolean, label: string, na
   b.bakeInto(g, `${name}-body`);
   // ---- the desktop, laid out as the close reference lays it ----
   const m = mirrored ? -1 : 1;
-  g.add(deskMat(cx - m * 4, top, cz - 3, spec.w * 0.52, spec.d * 0.42));
+  // the mat, laptop and mouse sit at the SITTER's (north) front, the laptop turned to face them — where a seated HumanBase
+  // body types on it; the monitor stays on the mat behind
+  g.add(deskMat(cx - m * 4, top, spec.z + 9.5, spec.w * 0.52, spec.d * 0.42));
   g.add(monitor(cx - m * 22, top + 0.35, cz - 6, 24, 13));
-  g.add(laptop(cx + m * 4, top + 0.35, cz - 1));
-  g.add(cyl(1.6, 0.9, mat(THEME.woodDark, 0.5), cx + m * 20, top + 0.35, cz - 4, 1.2)); // mouse
+  g.add(laptopAt(cx + m * 4, top + 0.35, spec.z + 4.1, Math.PI));
+  g.add(cyl(1.6, 0.9, mat(THEME.woodDark, 0.5), cx - 12, top + 0.35, spec.z + 5.0, 1.2)); // mouse, sitter's right (−x on every desk here: all face south)
   g.add(brassDeskLamp(cx - m * (spec.w / 2 - 9), top, cz - 8, m === 1 ? 1 : -1));
   g.add(deskOrganiser(cx + m * (spec.w / 2 - 16), top, cz - 6));
   g.add(deskPlant(cx + m * (spec.w / 2 - 8), top, cz + 5, 3.4));

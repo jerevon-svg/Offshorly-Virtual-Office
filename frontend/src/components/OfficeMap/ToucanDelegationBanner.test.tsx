@@ -53,6 +53,8 @@ vi.mock("../../services/toucan", async (importOriginal) => {
 });
 
 import { ToucanAssistantPanel } from "./ToucanAssistantPanel";
+import { getSelfStatusSnapshot, resetSelfStatusForTests, setManualStatus, startDnd } from "../../services/presence/selfStatusStore";
+import { resetAwayModeForTests } from "../../services/toucan/awayMode";
 
 const ACTIVE = {
   id: "d-1",
@@ -83,6 +85,8 @@ describe("ToucanAssistantPanel — A2.2 active delegation banner", () => {
     h.endedListeners.clear();
     h.service.loadLatestConversation.mockResolvedValue(null);
     h.service.getDelegation.mockResolvedValue(null);
+    resetSelfStatusForTests();
+    resetAwayModeForTests();
   });
   afterEach(cleanup);
 
@@ -99,7 +103,7 @@ describe("ToucanAssistantPanel — A2.2 active delegation banner", () => {
     expect(banner.textContent).toContain("Toucan is handling your messages");
     expect(banner.textContent).toContain("DMs + group @mentions");
     expect(banner.textContent).toMatch(/until \d/);
-    expect(screen.getByText("Stop")).toBeTruthy();
+    expect(screen.getByText("I'm back")).toBeTruthy();
   });
 
   it("A2.3 — renders an until-return delegation as until you return with the cap", async () => {
@@ -108,7 +112,7 @@ describe("ToucanAssistantPanel — A2.2 active delegation banner", () => {
     const banner = screen.getByTestId("toucan-delegation-banner");
     expect(banner.textContent).toContain("Toucan is handling your messages");
     expect(banner.textContent).toContain("DMs + group @mentions · until you return · max 24h");
-    expect(screen.getByText("Stop")).toBeTruthy();
+    expect(screen.getByText("I'm back")).toBeTruthy();
   });
 
   it("renders an A2.1 dm-only row as DMs only", async () => {
@@ -162,12 +166,12 @@ describe("ToucanAssistantPanel — A2.2 active delegation banner", () => {
       () => new Promise<Delegation | null>((resolve) => (resolveStop = resolve)),
     );
     await setup();
-    const stop = screen.getByText("Stop") as HTMLButtonElement;
+    const stop = screen.getByText("I'm back") as HTMLButtonElement;
     fireEvent.click(stop);
     fireEvent.click(stop);
     await flush();
     expect(h.service.cancelDelegation).toHaveBeenCalledTimes(1);
-    expect((screen.getByText("Stopping…") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByText("Ending…") as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByTestId("toucan-delegation-banner")).toBeTruthy();
 
     await act(async () => {
@@ -182,11 +186,11 @@ describe("ToucanAssistantPanel — A2.2 active delegation banner", () => {
     h.service.getDelegation.mockResolvedValue(ACTIVE);
     h.service.cancelDelegation.mockRejectedValue(new Error("boom"));
     await setup();
-    fireEvent.click(screen.getByText("Stop"));
+    fireEvent.click(screen.getByText("I'm back"));
     await flush();
     expect(screen.getByTestId("toucan-delegation-banner")).toBeTruthy();
     expect(screen.getByText(/couldn.t reach|failed|try again/i)).toBeTruthy();
-    expect((screen.getByText("Stop") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByText("I'm back") as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("delegation_ended from the server clears the banner", async () => {
@@ -205,5 +209,60 @@ describe("ToucanAssistantPanel — A2.2 active delegation banner", () => {
     });
     expect(screen.queryByTestId("toucan-delegation-banner")).toBeNull();
     expect(h.service.cancelDelegation).not.toHaveBeenCalled();
+  });
+
+  // --- Away Mode V1 ------------------------------------------------------------------------------
+
+  it("Away Mode — the banner shows Away, auto-replies on, and 'Until you're back' when no time was given", async () => {
+    h.service.getDelegation.mockResolvedValue({ ...ACTIVE, endCondition: "until_return", expiresAt: null });
+    await setup();
+    expect(screen.getByTestId("toucan-away-chip").textContent).toBe("Away");
+    expect(screen.getByTestId("toucan-away-return").textContent).toBe("Until you're back · Auto-replies on");
+    expect(screen.getByRole("button", { name: /I'm back/ })).toBeTruthy();
+  });
+
+  it("Away Mode — an explicitly given return time is shown", async () => {
+    h.service.getDelegation.mockResolvedValue({ ...ACTIVE, expiresAt: "2099-01-01T11:00:00.000Z", returnLabel: "7:00 PM" });
+    await setup();
+    expect(screen.getByTestId("toucan-away-return").textContent).toBe("Back around 7:00 PM · Auto-replies on");
+  });
+
+  it("Away Mode — an active delegation reads as AWAY and I'm back restores the person's own status", async () => {
+    setManualStatus("BUSY");
+    h.service.getDelegation.mockResolvedValue({ ...ACTIVE, endCondition: "until_return", expiresAt: null });
+    h.service.cancelDelegation.mockResolvedValue({ ...ACTIVE, status: "ended", endedReason: "cancelled" });
+    await setup();
+    expect(getSelfStatusSnapshot().currentStatus).toBe("AWAY");
+    expect(getSelfStatusSnapshot().manualStatus).toBe("BUSY"); // never overwritten
+    fireEvent.click(screen.getByText("I'm back"));
+    await flush();
+    expect(screen.queryByTestId("toucan-delegation-banner")).toBeNull();
+    expect(getSelfStatusSnapshot().currentStatus).toBe("BUSY");
+  });
+
+  it("Away Mode — DND keeps its precedence over Away", async () => {
+    expect(startDnd({ durationMs: 30 * 60_000 })).toBe(true);
+    h.service.getDelegation.mockResolvedValue({ ...ACTIVE, endCondition: "until_return", expiresAt: null });
+    await setup();
+    expect(getSelfStatusSnapshot().currentStatus).toBe("DND");
+  });
+
+  it("Away Mode — saying I'm back to Toucan clears the banner and Away from the server's answer", async () => {
+    h.service.getDelegation.mockResolvedValueOnce({ ...ACTIVE, endCondition: "until_return", expiresAt: null });
+    h.service.getDelegation.mockResolvedValue(null);
+    h.service.ask.mockResolvedValue({
+      text: "Welcome back! I've stopped handling your messages, so you're no longer shown as Away.",
+      intent: "delegation_stop",
+      supported: true,
+      conversationId: "c-1",
+    });
+    await setup();
+    expect(getSelfStatusSnapshot().currentStatus).toBe("AWAY");
+    fireEvent.change(screen.getByLabelText("Message the toucan"), { target: { value: "Hey Toucan, I'm back." } });
+    fireEvent.keyDown(screen.getByLabelText("Message the toucan"), { key: "Enter" });
+    await flush();
+    await flush();
+    expect(screen.queryByTestId("toucan-delegation-banner")).toBeNull();
+    expect(getSelfStatusSnapshot().currentStatus).not.toBe("AWAY");
   });
 });

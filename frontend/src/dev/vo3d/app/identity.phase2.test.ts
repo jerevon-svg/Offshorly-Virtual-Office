@@ -31,7 +31,9 @@ describe("createVo3dWorld's identity parameter", () => {
     // The guard added with Phase 3: an avatar id V2's GLB registry does not know (a V1 sprite-only
     // character such as "lui") resolves to the SAME null, rather than throwing inside castLods.
     expect(world).toContain("identity.avatarId && hasCastLods(identity.avatarId) ? castLods(identity.avatarId) : null");
-    expect(world).toContain("const avatarMissing = avatarLods === null");
+    expect(world).toContain("const avatarMissing = avatarLods === null && !humanOnly");
+    // a HumanBase-only employee (no legacy GLB — Lui) is not missing, and never falls back to Bon's GLB
+    expect(world).toContain("lods: humanOnly ? null : avatarLods ?? undefined");
   });
 
   it("never names a fallback character id anywhere in the selection", () => {
