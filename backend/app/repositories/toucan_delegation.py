@@ -31,6 +31,8 @@ ENDED_EXPIRED = "expired"
 ENDED_CANCELLED = "cancelled"
 ENDED_REPLACED = "replaced"
 ENDED_RETURNED = "returned"
+# Away Mode V1 — ended by a successful attendance checkout (routers/attendance.py).
+ENDED_CHECKED_OUT = "checked_out"
 
 # A2.2 — an optional async hook every ending goes through (expired, replaced, cancelled), so the
 # realtime layer can tell the OWNER without this module importing it. Storage stays authoritative;
@@ -142,6 +144,7 @@ async def start_delegation(
     ends_at: datetime | None = None,
     end_condition: str = END_AT_TIME,
     scope: str = SCOPE_DM,
+    return_label: str | None = None,
     now: datetime | None = None,
     on_ended: EndedHook = None,
 ) -> tuple[ToucanDelegation, bool]:
@@ -152,7 +155,11 @@ async def start_delegation(
       * duration_minutes → at_time, expires_at = now + clamped duration
       * ends_at (UTC)    → at_time, expires_at = min(ends_at, hard cap); an end already behind
                            `now` raises ValueError — the caller refuses rather than guesses
-      * until_return     → expires_at None; only a return signal or the hard cap ends it"""
+      * until_return     → expires_at None; only a return signal or the hard cap ends it
+
+    Away Mode V1: `return_label` is the clock time the owner explicitly gave ("7:00 PM"), kept in
+    the row's reserved `note` so automatic replies may state it. Only an ends_at (clock) window
+    keeps one — a duration or until_return row never carries a time to announce."""
     owner = normalize_email(owner_email)
     current = _as_aware_utc(now) or _utc_now()
     hard_cap_at = current + timedelta(minutes=DELEGATION_MAX_MINUTES)
@@ -179,6 +186,7 @@ async def start_delegation(
         starts_at=current,
         expires_at=expires_at,
         hard_cap_at=hard_cap_at,
+        note=(return_label[:300] if return_label and ends_at is not None and end_condition != END_UNTIL_RETURN else None),
         reply_count=0,
     )
     session.add(row)

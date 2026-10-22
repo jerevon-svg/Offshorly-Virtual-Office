@@ -33,6 +33,7 @@ import {
   type ToucanCatchUp,
   type ToucanCatchUpRow,
 } from "../../services/toucan";
+import { awayReturnLine, setAwayModeDelegation } from "../../services/toucan/awayMode";
 import { appendDictatedText } from "./toucanDictation";
 
 // ---------------------------------------------------------------------------
@@ -542,7 +543,9 @@ export function ToucanAssistantPanel({
     Promise.resolve()
       .then(() => toucanService.getDelegation({ signal: controller.signal }))
       .then((active) => {
-        if (!controller.signal.aborted) setDelegation(active ?? null);
+        if (controller.signal.aborted) return;
+        setDelegation(active ?? null);
+        setAwayModeDelegation(active ?? null);
       })
       .catch(() => {});
     return () => controller.abort();
@@ -977,6 +980,8 @@ export function ToucanAssistantPanel({
           // adding the resolved end time in the viewer's own zone. Never touches status.
           // A2.2: the banner appears from the returned row, no refresh needed.
           setDelegation(result.delegation ?? null);
+          // Away Mode V1 — the viewer reads as Away from this moment (server-confirmed row).
+          setAwayModeDelegation(result.delegation ?? null);
           appendToucanTurn(withDelegationEnd(result.text, result.delegation?.expiresAt));
           return;
         }
@@ -1003,7 +1008,10 @@ export function ToucanAssistantPanel({
     setStopBusy(true);
     void toucanService
       .cancelDelegation()
-      .then(() => setDelegation(null))
+      .then(() => {
+        setDelegation(null);
+        setAwayModeDelegation(null);
+      })
       .catch(() => appendToucanTurn(REQUEST_FAILED_TEXT))
       .finally(() => setStopBusy(false));
   }, [delegation, stopBusy, appendToucanTurn]);
@@ -1195,6 +1203,18 @@ export function ToucanAssistantPanel({
         { signal: controller.signal },
       )
       .then((answer) => {
+        // Away Mode V1 — "I'm back" / "stop handling my messages" ended the delegation server-side.
+        // Clear the banner and the Away status from the server's own answer, without depending on
+        // the realtime event arriving (it may not, e.g. with no socket).
+        if (answer.intent === "delegation_stop") {
+          void toucanService
+            .getDelegation()
+            .then((current) => {
+              setDelegation(current ?? null);
+              setAwayModeDelegation(current ?? null);
+            })
+            .catch(() => {});
+        }
         const isCatchUpIntent = answer.intent === "away_summary" || answer.intent === "important_summary";
         // Tracks the conversation the server actually used — the one that was
         // sent, or the one it created because none was.
@@ -1417,12 +1437,18 @@ export function ToucanAssistantPanel({
         <div className={styles.delegationBanner} data-testid="toucan-delegation-banner" role="status">
           <div className={styles.delegationText}>
             <span className={styles.delegationTitle}>
+              <span className={styles.delegationAway} data-testid="toucan-away-chip">
+                Away
+              </span>
               Toucan is handling your messages
               {(delegation.urgentCount ?? 0) > 0 && (
                 <span className={styles.delegationUrgent} data-testid="toucan-delegation-urgent-count">
                   {delegation.urgentCount === 1 ? "1 urgent" : `${delegation.urgentCount} urgent`}
                 </span>
               )}
+            </span>
+            <span className={styles.delegationMeta} data-testid="toucan-away-return">
+              {awayReturnLine(delegation)} · Auto-replies on
             </span>
             <span className={styles.delegationMeta}>{describeActiveDelegation(delegation)}</span>
           </div>
@@ -1431,9 +1457,9 @@ export function ToucanAssistantPanel({
             className={styles.delegationStop}
             onClick={handleStopDelegation}
             disabled={stopBusy}
-            aria-label="Stop Toucan handling your messages"
+            aria-label="I'm back — stop Toucan handling your messages"
           >
-            {stopBusy ? "Stopping…" : "Stop"}
+            {stopBusy ? "Ending…" : "I'm back"}
           </button>
         </div>
       )}

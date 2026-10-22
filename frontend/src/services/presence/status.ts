@@ -87,6 +87,9 @@ export interface AutoConditions {
   /** participating in a Meeting Floor room's live meeting — outranks an ordinary call */
   inMeeting?: boolean;
   offline: boolean;
+  /** Away Mode V1 — Toucan is handling this person's messages (mirrored from the server's
+   *  delegation row by services/toucan/awayMode.ts). Reads as AWAY, at Away's own precedence. */
+  delegated?: boolean;
 }
 
 // Precedence (highest to lowest):
@@ -106,7 +109,7 @@ export function resolveCurrentStatus(
   if (autoConditions.inMeeting) return "IN_MEETING";
   if (autoConditions.inCall) return "IN_CALL";
   if (autoConditions.inConversation) return "IN_CONVERSATION";
-  if (autoConditions.away) return "AWAY";
+  if (autoConditions.away || autoConditions.delegated) return "AWAY";
   return manualStatus;
 }
 

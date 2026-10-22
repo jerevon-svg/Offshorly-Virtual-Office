@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 
 from app import database as app_db
 from app.config import settings
+from app.repositories import attendance as attendance_repo
+from app.repositories.attendance import CHECKED_OUT
 from app.repositories import chat as chat_repo
 from app.repositories import toucan_delegation as delegation_repo
 from app.repositories import toucan_urgency as urgency_repo
@@ -18,6 +20,7 @@ from app.services.chat_send import (
 )
 from app.services.delegation_events import emit_delegation_ended, emit_delegation_urgent_flagged
 from app.services.toucan.delegation import (
+    END_AT_TIME,
     SCOPE_DM_AND_GROUPS,
     combined_first_reply_text,
     combined_follow_up_reply_text,
@@ -184,6 +187,37 @@ class DelegationReplyGate:
 reply_gate = DelegationReplyGate()
 
 
+def _aware(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def shareable_return_label(delegation, now: datetime | None = None) -> str | None:
+    """Away Mode V1 (decision A) — the return time an automatic reply may state, or None.
+
+    Only a clock time the owner explicitly gave (stored on the row's reserved `note` at confirm),
+    only on an at_time row, and only while that time is still ahead. A duration or "until I return"
+    never stored one, so nothing is derived or invented."""
+    label = getattr(delegation, "note", None)
+    expires_at = _aware(getattr(delegation, "expires_at", None))
+    if not label or delegation.end_condition != END_AT_TIME or expires_at is None:
+        return None
+    return label if expires_at > (now or datetime.now(timezone.utc)) else None
+
+
+async def _checked_out_since(session, delegation) -> bool:
+    record = await attendance_repo.get_status(session, delegation.owner_email)
+    checked_out_at = _aware(record.get("checked_out_at"))
+    starts_at = _aware(delegation.starts_at)
+    return (
+        record.get("status") == CHECKED_OUT
+        and checked_out_at is not None
+        and starts_at is not None
+        and checked_out_at >= starts_at
+    )
+
+
 async def evaluate_and_reply(
     conversation_id: str,
     sender_email: str,
@@ -243,6 +277,9 @@ async def evaluate_and_reply(
                 ),
                 key=lambda d: d.owner_email,
             )
+            # Away Mode V1 — the second wall behind the checkout hook (routers/attendance.py): an owner
+            # who checked out AFTER delegating gets no automatic replies even if ending the row failed.
+            eligible = [d for d in eligible if not await _checked_out_since(session, d)]
             if not eligible:
                 return None
             # A3 — urgency first. Returns the reply it sent, None for deliberate silence, or the
@@ -271,7 +308,10 @@ async def evaluate_and_reply(
                 return None
             owners = [d.owner_email for d in included]
             first = any(reply_gate.replies_so_far(conversation_id, d.owner_email, d.id) == 0 for d in included)
-            reply = combined_first_reply_text(owners) if first else combined_follow_up_reply_text(owners)
+            label = shareable_return_label(included[0]) if len(included) == 1 else None
+            reply = (
+                combined_first_reply_text(owners, label) if first else combined_follow_up_reply_text(owners, label)
+            )
             # A2.4 — a grounded answer, for exactly one owner, only when every wall lets it through.
             if len(included) == 1:
                 grounded = await _grounded_answer(session, conversation_id, owners[0], message_id, text)

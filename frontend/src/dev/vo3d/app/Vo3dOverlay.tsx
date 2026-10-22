@@ -102,6 +102,7 @@ import {
 import { resolveCharacterAnimState } from "../../../render3d/characterAnimationState";
 import { CLIP_TALK_AGREE } from "../adapters/v1Avatar";
 import { useAutoStatusDetection } from "../../../services/presence/useAutoStatusDetection";
+import { useAwayModeSync } from "../../../services/toucan/awayMode";
 import { isConnectedToMedia } from "../../../services/call/callStore";
 import type { ChatMessage } from "../../../services/chat";
 import { isAuthoredMessage } from "../../../services/chat/types";
@@ -733,6 +734,9 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     () => spatialSessions.some((s) => s.members.includes(self) && s.members.length >= 2),
     [self, spatialSessions],
   );
+  // Away Mode V1 — while Toucan handles this viewer's messages, their effective status reads AWAY
+  // (mirrored from the server's delegation row; see services/toucan/awayMode.ts).
+  useAwayModeSync();
   useAutoStatusDetection({
     inConversation: inConv,
     offline: !mayEnterOffice(attendance.access),

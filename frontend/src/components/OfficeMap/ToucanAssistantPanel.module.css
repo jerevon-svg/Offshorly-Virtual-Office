@@ -563,6 +563,25 @@
   opacity: 0.6;
 }
 
+.delegationStop:focus-visible {
+  outline: 2px solid #3f3a4d;
+  outline-offset: 2px;
+}
+
+/* Away Mode V1 — the small Away chip, in the presence palette's own Away amber (status.ts). */
+.delegationAway {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(234, 179, 8, 0.18);
+  color: #8a6400;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  vertical-align: 1px;
+}
+
 /* A3 — the live urgent counter inside the delegation banner. */
 .delegationUrgent {
   display: inline-block;

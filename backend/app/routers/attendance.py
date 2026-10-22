@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -7,8 +9,10 @@ from app.auth.deps import get_current_email
 from app.database import get_db
 from app.realtime.state import offline_lineup, sio
 from app.repositories import attendance as attendance_repo
+from app.repositories import toucan_delegation as toucan_delegation_repo
 from app.repositories.attendance import CHECKED_IN, CHECKED_OUT
 from app.schemas.attendance import AttendanceOut
+from app.services.delegation_events import emit_delegation_ended
 from app.services.quests import EVENT_CHECK_IN, EVENT_CHECK_OUT, record_quest_event
 
 # Attendance = work-session state, server-authoritative and independent of socket connection
@@ -19,6 +23,7 @@ from app.services.quests import EVENT_CHECK_IN, EVENT_CHECK_OUT, record_quest_ev
 # alongside these calls for the presence-cursor bookkeeping they already own.
 
 router = APIRouter(tags=["attendance"])
+logger = logging.getLogger(__name__)
 
 
 async def _broadcast_lineup() -> None:
@@ -76,4 +81,26 @@ async def check_out(
             dedupe_key=f"{record['email']}:{record['checked_out_at'].isoformat()}",
             occurred_at=record["checked_out_at"],
         )
+    if record["status"] == CHECKED_OUT:
+        await _end_delegation_on_checkout(db, record["email"])
     return AttendanceOut.from_dict(record)
+
+
+async def _end_delegation_on_checkout(db: AsyncSession, email: str) -> None:
+    """Away Mode V1 — a successful checkout ends the owner's Toucan delegation (reason
+    "checked_out"), so nobody gets "they're away" replies from someone who has gone home.
+
+    Only THIS route does it: a socket go_offline, a refresh or a dropped connection is not a
+    checkout, and an employee stays Away while disconnected. Idempotent (nothing active → no-op).
+    Never fails the checkout: if ending the row fails, the reply path's own guard
+    (chat_delegation._checked_out_since) still refuses to answer for someone who checked out
+    after delegating, and no delegation_ended event is sent for a row that did not end."""
+    try:
+        await toucan_delegation_repo.end_delegation(
+            db,
+            owner_email=email,
+            reason=toucan_delegation_repo.ENDED_CHECKED_OUT,
+            on_ended=emit_delegation_ended,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("ending the Toucan delegation at checkout failed: owner=%s", email)

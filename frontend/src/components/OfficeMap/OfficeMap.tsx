@@ -119,6 +119,7 @@ import { useCheckoutFlow } from "./useCheckoutFlow";
 import { WorkingStatusIndicator } from "./checkout/WorkingStatusIndicator";
 import { StatusPicker } from "./StatusPicker";
 import { useAutoStatusDetection } from "../../services/presence/useAutoStatusDetection";
+import { useAwayModeSync } from "../../services/toucan/awayMode";
 import { endDnd, useSelfStatus } from "../../services/presence/selfStatusStore";
 import { resolvePeerStatus, type OfficeStatus } from "../../services/presence/status";
 import { resolveManualStatusMovement } from "../../services/presence/statusMovement";
@@ -2011,6 +2012,9 @@ export function OfficeMap() {
   // for seatInteractionsSuppressed above, so self follows the same "not checked
   // in yet" rule other checked-in-gated behavior in this file already follows.
   // See useAutoStatusDetection.ts.
+  // Away Mode V1 — while Toucan handles this viewer's messages, their effective status reads AWAY
+  // (mirrored from the server's delegation row; see services/toucan/awayMode.ts).
+  useAwayModeSync();
   useAutoStatusDetection({
     inConversation: inConv,
     offline: !hasCheckedIn || checkoutFlow.state === "CHECKED_OUT",

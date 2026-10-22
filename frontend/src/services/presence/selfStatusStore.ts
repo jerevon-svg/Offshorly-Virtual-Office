@@ -136,6 +136,7 @@ let autoConditions: AutoConditions = {
   inCall: false,
   inMeeting: false,
   offline: false,
+  delegated: false,
 };
 
 const listeners = new Set<() => void>();
@@ -342,7 +343,7 @@ export function resetSelfStatusForTests(): void {
   dndReason = null;
   dndPreviousStatus = null;
   dndUsedTodayMs = 0;
-  autoConditions = { away: false, inConversation: false, inCall: false, inMeeting: false, offline: false };
+  autoConditions = { away: false, inConversation: false, inCall: false, inMeeting: false, offline: false, delegated: false };
   if (typeof window !== "undefined") {
     try {
       window.localStorage.removeItem(STORAGE_KEY);

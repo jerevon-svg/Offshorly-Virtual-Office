@@ -125,6 +125,8 @@ class ToucanDelegationOut(BaseModel):
     reply_count: int = Field(alias="replyCount")
     # A3 — flags under THIS delegation the owner has not opened yet. Zero on a fresh row.
     urgent_count: int = Field(default=0, alias="urgentCount")
+    # Away Mode V1 — the return time the owner explicitly gave ("7:00 PM"), or None.
+    return_label: str | None = Field(default=None, alias="returnLabel")
 
     @field_serializer("starts_at", "expires_at", "hard_cap_at", "ended_at")
     def _serialize_times(self, dt: datetime | None) -> str | None:

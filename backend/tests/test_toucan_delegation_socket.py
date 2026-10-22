@@ -876,3 +876,69 @@ async def test_non_member_cannot_trigger_a_grounded_answer(grounded, server):
     await _delegate(bon)
     assert await evaluate_and_reply(conv_id, alex, "x1", None, "@Bon where is the presentation?") is None
     assert grounded.calls == [] and await _toucan_messages(conv_id) == []
+
+
+# --- Away Mode V1: return time, checkout, return -------------------------------------------------------
+
+
+async def test_an_explicit_return_time_is_stated_in_the_first_and_follow_up_replies(server, monkeypatch):
+    monkeypatch.setattr(settings, "TOUCAN_DELEGATION_COOLDOWN_SECONDS", 0.0)
+    bon, micah = _fresh("bon"), _fresh("micah")
+    conv_id = await _dm(bon, micah)
+    async with app_db.async_session_maker() as session:
+        await repo.start_delegation(
+            session, owner_email=bon, ends_at=datetime.now(timezone.utc) + timedelta(hours=5), return_label="7:00 PM"
+        )
+    first = await evaluate_and_reply(conv_id, micah, "m1")
+    assert first is not None and first["text"] == first_reply_text(bon, "7:00 PM")
+    assert "expects to return around 7:00 PM" in first["text"] and first["senderId"] == TOUCAN_CHAT_SENDER
+    second = await evaluate_and_reply(conv_id, micah, "m2")
+    assert second is not None and second["text"] == follow_up_reply_text(bon, "7:00 PM")
+
+
+async def test_a_duration_never_becomes_an_announced_time(server):
+    bon, micah = _fresh("bon"), _fresh("micah")
+    conv_id = await _dm(bon, micah)
+    async with app_db.async_session_maker() as session:
+        # Even if a caller tried to attach a label to a duration row, the repository drops it.
+        row, _ = await repo.start_delegation(session, owner_email=bon, duration_minutes=180, return_label="7:00 PM")
+    assert row.note is None
+    reply = await evaluate_and_reply(conv_id, micah, "m1")
+    assert reply is not None and reply["text"] == first_reply_text(bon) and "around" not in reply["text"]
+
+
+async def test_no_automatic_reply_for_an_owner_who_checked_out_after_delegating(server):
+    from app.repositories import attendance as attendance_repo
+
+    bon, micah = _fresh("bon"), _fresh("micah")
+    conv_id = await _dm(bon, micah)
+    started = datetime.now(timezone.utc) - timedelta(minutes=30)
+    await _delegate(bon, now=started)
+    async with app_db.async_session_maker() as session:
+        await attendance_repo.check_in(session, bon, now=started - timedelta(hours=2))
+        await attendance_repo.check_out(session, bon, now=started + timedelta(minutes=10))
+    # The row is still active here (as if the checkout hook had failed) — the reply path refuses anyway.
+    assert await evaluate_and_reply(conv_id, micah, "m1") is None
+    assert await _toucan_messages(conv_id) == []
+
+
+async def test_a_checkout_before_the_delegation_started_does_not_block_replies(server):
+    from app.repositories import attendance as attendance_repo
+
+    bon, micah = _fresh("bon"), _fresh("micah")
+    conv_id = await _dm(bon, micah)
+    started = datetime.now(timezone.utc) - timedelta(minutes=5)
+    async with app_db.async_session_maker() as session:
+        await attendance_repo.check_in(session, bon, now=started - timedelta(hours=3))
+        await attendance_repo.check_out(session, bon, now=started - timedelta(hours=2))
+    await _delegate(bon, now=started)
+    assert await evaluate_and_reply(conv_id, micah, "m1") is not None
+
+
+async def test_no_automatic_reply_once_the_owner_is_back(server):
+    bon, micah = _fresh("bon"), _fresh("micah")
+    conv_id = await _dm(bon, micah)
+    await _delegate(bon)
+    async with app_db.async_session_maker() as session:
+        await repo.end_delegation(session, owner_email=bon, reason=repo.ENDED_RETURNED)
+    assert await evaluate_and_reply(conv_id, micah, "m1") is None
