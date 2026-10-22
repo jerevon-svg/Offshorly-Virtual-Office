@@ -2724,11 +2724,24 @@ async def jump(sid: str, payload: dict | None = None) -> None:
 #     per-page `seq`, which receivers use (with `at`) to drop duplicates and anything out of order;
 #   • no state, no persistence, no snapshot — a reconnect replays nothing — and a per-kind floor on how often
 #     one connection may send each, as `jump` has.
-_PARKOUR_KINDS = ("double", "roll")
+# PARKOUR V2 adds the vault and the mantle: each also carries its duration and its heights relative to where it
+# started (`rise` to the end, `apex` the peak), bounded here. They are a description for peers to replay, nothing
+# more — receivers honour an end height only where a real standable top is, and no position travels on this event
+# (the traversal's path is the walk published with it, under the walk's own revision ordering).
+_PARKOUR_KINDS = ("double", "roll", "vault", "mantle")
+_TIMED_KINDS = ("roll", "vault", "mantle")
+_HEIGHT_KINDS = ("vault", "mantle")
+_RISE_MAX = 40.0
 _PARKOUR_MIN_INTERVAL_MS = 300
 _SEQ_MAX = 2**31 - 1
 _ROLL_MS_MIN = 300
 _ROLL_MS_MAX = 1500
+
+
+def _is_bounded_number(v, lo: float, hi: float) -> bool:
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    return v == v and lo <= v <= hi
 
 
 def _action_seq(payload) -> int | None:
@@ -2753,12 +2766,20 @@ async def parkour(sid: str, payload: dict | None = None) -> None:
             return
         await sio.save_session(sid, {**session_data, key: now})
         seq = _action_seq(payload)
-        # a roll's duration, so peers play it exactly as long as its published travel takes; bounded, else absent
+        # a roll's (a vault's, a mantle's) duration, so peers play it exactly as long as its published travel takes;
+        # bounded, else absent
         ms = payload.get("ms")
-        ms = ms if kind == "roll" and isinstance(ms, int) and not isinstance(ms, bool) and _ROLL_MS_MIN <= ms <= _ROLL_MS_MAX else None
+        ms = ms if kind in _TIMED_KINDS and isinstance(ms, int) and not isinstance(ms, bool) and _ROLL_MS_MIN <= ms <= _ROLL_MS_MAX else None
+        heights = {}
+        if kind in _HEIGHT_KINDS:
+            rise, apex = payload.get("rise"), payload.get("apex")
+            if _is_bounded_number(rise, -_RISE_MAX, _RISE_MAX):
+                heights["rise"] = float(rise)
+            if _is_bounded_number(apex, 0.0, _RISE_MAX):
+                heights["apex"] = float(apex)
         await sio.emit(
             "peer_parkour",
-            {"email": email, "at": now, "kind": kind, **({"seq": seq} if seq is not None else {}), **({"ms": ms} if ms is not None else {})},
+            {"email": email, "at": now, "kind": kind, **({"seq": seq} if seq is not None else {}), **({"ms": ms} if ms is not None else {}), **heights},
             skip_sid=sid,
         )
     except Exception as exc:  # noqa: BLE001

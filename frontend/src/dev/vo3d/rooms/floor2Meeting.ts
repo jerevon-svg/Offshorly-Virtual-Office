@@ -33,6 +33,7 @@ import { pointInRect, type Facing, type Rect, type Vec2 } from "../core/coords";
 import type { ApproachCapability, DoorCapability, Entity, LoungeSeatSlot, RoomDef, SeatCapability } from "../world/WorldState";
 import { ARMCHAIR, CAFE_CHAIR, SOFA_CUSHION_LOCAL_X, SOFA_CUSHION_TOP, sofaCushionDepth, sofaCushionZ } from "../build/furniture";
 import { MEETING_CHAIR_SEAT_TOP } from "../build/meetingChair";
+import { STANDABLE_KIND_TOPS, standableFromCircle, standableFromRect, type Standable, type TraversalFlags } from "../world/standables";
 
 /** Floor 2's plate origin (rooms/floor2.ts ORIGIN). A literal so this module stays a leaf. */
 export const PLATE_ORIGIN: Vec2 = { x: 6000, z: 0 };
@@ -436,7 +437,10 @@ export const AMENITIES: Amenity[] = [
 
 // ============================= COLLISION =========================================================
 
-export type Solid = { rect: Rect } | { c: Vec2; r: number };
+/** PARKOUR V2 — a solid may carry TRAVERSAL METADATA: an id the stand test can be told to excuse, and its top
+ *  (stood on, vaulted — see world/standables). Solids without it block at every height, exactly as before. */
+export type SolidTraversal = { id: string; top: number } & TraversalFlags;
+export type Solid = ({ rect: Rect } | { c: Vec2; r: number }) & { trav?: SolidTraversal };
 
 export interface GlassRun { axis: "x" | "z"; at: number; from: number; to: number; door?: { from: number; to: number }; frame: "charcoal" | "bronze"; band: BandStyle; roomId: string }
 
@@ -465,6 +469,8 @@ export function screenRect(s: MeetingRoomSpec["screen"]): Rect {
 }
 
 const armRect = (a: MeetingSeat): Rect => ({ x: a.x - 16, z: a.z - 16, w: 32, d: 32 });
+/** the built-in planters' walnut rim (build/floor2Meeting: a 14-high trough, the rim on top) */
+const PLANTER_TOP = 14;
 
 /** EVERYTHING THAT STOPS A BODY. Chairs are NOT solid — a body steps between them to sit. */
 export const MEETING_FLOOR_SOLIDS: readonly Solid[] = (() => {
@@ -475,7 +481,10 @@ export const MEETING_FLOOR_SOLIDS: readonly Solid[] = (() => {
     const t = r.table.rect;
     out.push(r.table.shape === "round" ? { c: { x: t.x + t.w / 2, z: t.z + t.d / 2 }, r: t.w / 2 + 1 } : { rect: { x: t.x - 1, z: t.z - 1, w: t.w + 2, d: t.d + 2 } });
     out.push({ rect: screenRect(r.screen) });
-    if (r.lounge) { out.push({ rect: r.lounge.sofa.rect }); for (const a of r.lounge.armchairs) out.push({ rect: armRect(a) }); }
+    if (r.lounge) {
+      out.push({ rect: r.lounge.sofa.rect, trav: { id: `${r.id}/sofa`, top: SOFA_CUSHION_TOP } });
+      r.lounge.armchairs.forEach((a, i) => out.push({ rect: armRect(a), trav: { id: `${r.id}/armchair-${i}`, top: ARMCHAIR.cushionTop } }));
+    }
     if (r.corner) { out.push({ rect: r.corner.table }); for (const a of r.corner.armchairs) out.push({ rect: armRect(a) }); }
     for (const p of r.plants ?? []) out.push({ c: { x: p.x, z: p.z }, r: p.r * 0.9 });
     // a chair is a body you walk round, not through — sized to its seat, so its own sit gesture (which
@@ -491,8 +500,13 @@ export const MEETING_FLOOR_SOLIDS: readonly Solid[] = (() => {
       case "screen": out.push({ rect: a.rect }); break;
       case "plant": out.push({ c: a.c, r: a.r * 0.9 }); break;
       case "column": out.push({ rect: { x: a.c.x - 8, z: a.c.z - 8, w: 16, d: 16 } }); break;
-      case "armchair": out.push({ rect: armRect(a.seat) }); break;
-      case "cafe-table": out.push({ c: a.c, r: 9 }); for (const s of a.chairs) out.push({ c: { x: s.x, z: s.z }, r: 6 }); break;
+      // PARKOUR V2 — the plate's own seating and low tables carry their measured tops (build/furniture's pieces);
+      // the planters are vault-only: a stone trough under planting is no place to stand
+      case "sofa": out.push({ rect: a.rect, trav: { id: `${PLATE_ID}/${a.id}`, top: SOFA_CUSHION_TOP } }); break;
+      case "armchair": out.push({ rect: armRect(a.seat), trav: { id: `${PLATE_ID}/${a.id}`, top: ARMCHAIR.cushionTop } }); break;
+      case "lounge-table": out.push({ rect: a.rect, trav: { id: `${PLATE_ID}/${a.id}`, top: STANDABLE_KIND_TOPS["lounge-table"], vault: true } }); break;
+      case "planter": out.push({ rect: a.rect, trav: { id: `${PLATE_ID}/${a.id}`, top: PLANTER_TOP, stand: false, vault: true } }); break;
+      case "cafe-table": out.push({ c: a.c, r: 9, trav: { id: `${PLATE_ID}/${a.id}`, top: STANDABLE_KIND_TOPS["cafe-table"], vault: true } }); for (const s of a.chairs) out.push({ c: { x: s.x, z: s.z }, r: 6 }); break;
       case "worktable": out.push({ rect: a.rect }); for (const s of a.chairs) out.push({ c: { x: s.x, z: s.z }, r: 7 }); break;
       case "desk": out.push({ rect: a.rect }); out.push({ c: { x: a.chair.x, z: a.chair.z }, r: 7 }); break;
       default: out.push({ rect: a.rect });
@@ -532,7 +546,18 @@ export function setDoorwayShut(roomId: string, shut: boolean): boolean {
 }
 export const shutDoorwayIds = (): string[] => [...shutDoorways.keys()];
 
-export function clearsMeetingFloor(p: Vec2, radius: number): boolean {
+/** PARKOUR V2 — the plate's traversal items (world/standables), one per solid that carries metadata */
+export function meetingFloorStandables(): Standable[] {
+  return MEETING_FLOOR_SOLIDS.flatMap((s) => {
+    const t = s.trav;
+    if (!t) return [];
+    const flags: TraversalFlags = { ...(t.stand === false ? { stand: false } : {}), ...(t.vault ? { vault: true } : {}) };
+    return ["rect" in s ? standableFromRect(t.id, t.top, s.rect, flags) : standableFromCircle(t.id, t.top, s.c, s.r, flags)];
+  });
+}
+
+/** `ignore` (PARKOUR V2): ids of traversal items this body's feet have cleared (or a vault excuses) — see world/standables */
+export function clearsMeetingFloor(p: Vec2, radius: number, ignore?: ReadonlySet<string>): boolean {
   const i0 = Math.floor((p.x - radius - OX) / BUCKET), i1 = Math.floor((p.x + radius - OX) / BUCKET);
   const j0 = Math.floor((p.z - radius - OZ) / BUCKET), j1 = Math.floor((p.z + radius - OZ) / BUCKET);
   for (let i = i0; i <= i1; i++)
@@ -540,6 +565,7 @@ export function clearsMeetingFloor(p: Vec2, radius: number): boolean {
       const list = buckets.get(bkey(i, j));
       if (!list) continue;
       for (const s of list) {
+        if (ignore && s.trav && ignore.has(s.trav.id)) continue;
         if ("rect" in s) { if (hitsRect(p, radius, s.rect)) return false; }
         else if ((p.x - s.c.x) ** 2 + (p.z - s.c.z) ** 2 < (radius + s.r) ** 2) return false;
       }

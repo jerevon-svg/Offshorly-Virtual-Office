@@ -429,7 +429,7 @@ export function Vo3dHost({ experience }: Vo3dHostProps = {}) {
     // PARKOUR V1 — the double jump (with its flip) and the landing roll, on the same clock and the same ordering
     const offParkour = subscribePeerParkour((e) => {
       const nowOnServer = Date.now() + getServerClockOffsetMs();
-      worldRef.current?.peerParkour(e.email, e.kind, Math.max(0, nowOnServer - e.at), e.at, e.seq, e.ms);
+      worldRef.current?.peerParkour(e.email, e.kind, Math.max(0, nowOnServer - e.at), e.at, e.seq, e.ms, e.rise, e.apex);
     });
     return () => {
       offJump();

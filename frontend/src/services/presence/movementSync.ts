@@ -167,6 +167,14 @@ const seqField = (v: unknown): { seq: number } | Record<string, never> =>
 /** PARKOUR V1 — the feet height a V2 session stands at (a furniture top). Finite and in range or absent; the
  *  3D world only ever honours it where it matches a real standable top (dev/vo3d/world/standables). */
 /** PARKOUR V1 — a roll's duration: a whole number of ms in the range a roll can last, or absent */
+/** PARKOUR V2 — a vault's or a mantle's heights relative to its start: `rise` (where the feet end) and `apex` (the
+ *  highest they go), each a bounded finite number or absent. Receivers validate any end height against real tops. */
+const riseField = (v: unknown): { rise: number } | Record<string, never> =>
+  typeof v === "number" && Number.isFinite(v) && v >= -40 && v <= 40 ? { rise: Math.round(v * 100) / 100 } : {};
+const apexField = (v: unknown): { apex: number } | Record<string, never> =>
+  typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 40 ? { apex: Math.round(v * 100) / 100 } : {};
+export type ParkourRelayKind = "double" | "roll" | "vault" | "mantle";
+const PARKOUR_KINDS: readonly ParkourRelayKind[] = ["double", "roll", "vault", "mantle"];
 const msField = (v: unknown): { ms: number } | Record<string, never> =>
   typeof v === "number" && Number.isFinite(v) && v >= 300 && v <= 1500 ? { ms: Math.round(v) } : {};
 const feetField = (v: unknown): { feet: number } | Record<string, never> =>
@@ -212,10 +220,14 @@ export interface PeerJumpEvent {
 export interface PeerParkourEvent {
   email: string;
   at: number;
-  kind: "double" | "roll";
+  kind: ParkourRelayKind;
   seq?: number;
-  /** a roll's duration, ms, so peers play it for exactly as long as its published travel takes */
+  /** a roll's (PARKOUR V2: a vault's, a mantle's) duration, ms, so peers play it for exactly as long as its
+   *  published travel takes */
   ms?: number;
+  /** PARKOUR V2 — a vault's or mantle's end height and peak, relative to where it started */
+  rise?: number;
+  apex?: number;
 }
 
 function socketBase(): string {
@@ -476,8 +488,11 @@ function ensureSocket(): Socket | null {
   socket.on("peer_parkour", (payload?: PeerParkourEvent) => {
     if (typeof payload?.email !== "string" || !payload.email) return;
     if (typeof payload.at !== "number" || !Number.isFinite(payload.at)) return;
-    if (payload.kind !== "double" && payload.kind !== "roll") return;
-    const event: PeerParkourEvent = { email: payload.email.toLowerCase(), at: payload.at, kind: payload.kind, ...seqField(payload.seq), ...msField(payload.ms) };
+    if (!PARKOUR_KINDS.includes(payload.kind)) return;
+    const event: PeerParkourEvent = {
+      email: payload.email.toLowerCase(), at: payload.at, kind: payload.kind, ...seqField(payload.seq), ...msField(payload.ms),
+      ...(payload.kind === "vault" || payload.kind === "mantle" ? { ...riseField(payload.rise), ...apexField(payload.apex) } : {}),
+    };
     for (const listener of peerParkourListeners) listener(event);
   });
 
@@ -518,8 +533,8 @@ export function emitJump(seq?: number): void {
 
 /** PARKOUR V1 — THIS USER JUST DOUBLE-JUMPED (with its flip) OR ROLLED ON LANDING. Fire and forget, like
  *  emitJump: the server stamps who and when, peers play it from their own physics. */
-export function emitParkour(kind: "double" | "roll", seq?: number, ms?: number): void {
-  ensureSocket()?.emit("parkour", { kind, ...seqField(seq), ...msField(ms) });
+export function emitParkour(kind: ParkourRelayKind, seq?: number, ms?: number, heights?: { rise: number; apex: number }): void {
+  ensureSocket()?.emit("parkour", { kind, ...seqField(seq), ...msField(ms), ...(heights ? { ...riseField(heights.rise), ...apexField(heights.apex) } : {}) });
 }
 
 /** Subscribe to `peer_parkour`. Same shape and lifetime as subscribePeerJump. */

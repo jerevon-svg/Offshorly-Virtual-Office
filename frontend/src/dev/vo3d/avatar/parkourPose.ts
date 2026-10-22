@@ -29,14 +29,23 @@ import { about, findRig, rotateWorld, type Rig } from "./gaitPose";
 // Shared by the local avatar (avatar/Avatar) and every replicated body (world/Coworkers): a flip and the
 // people watching it play the same curves. Future traversal (vault, climb, zipline) adds poses and timelines
 // to this vocabulary rather than a new layer.
+//
+// PARKOUR V2 adds two KEYFRAMED moves, each limb on its own curve (the lead and trail sides differ):
+//   VAULT   takeoff with the hands reaching for the top · the lead hand planted, weight over it, hips and knees
+//           drawn up and the body banked so the legs pass beside it · the legs reach down · a controlled landing.
+//   MANTLE  reach up and grip · pull (elbows bend, legs hang) · press down over the edge, the torso forward and the
+//           lead knee brought up onto the top · stand up over the feet.
+// Their HEIGHT and travel are the body's (player/traversal moves it); the wrapper only banks and pitches it.
 
-export type ParkourMove = "flip" | "roll" | "land";
+export type ParkourMove = "flip" | "roll" | "land" | "vault" | "mantle";
 
 /** How long each lasts, ms. The flip fits inside a double jump's remaining air time (~0.8 s); the roll reads
  *  as a quick, controlled tumble; the absorb is a beat. */
-export const PARKOUR_MS: Readonly<Record<ParkourMove, number>> = { flip: 720, roll: 820, land: 280 };
+export const PARKOUR_MS: Readonly<Record<ParkourMove, number>> = { flip: 720, roll: 820, land: 280, vault: 650, mantle: 850 };
 /** a roll's duration is set by its impact and speed (player/PlayerMode), within these bounds */
 export const ROLL_MS_RANGE = { min: 680, max: 1000 } as const;
+/** a vault's or a mantle's duration is its plan's (player/traversal), within these bounds */
+export const TRAVERSE_MS_RANGE = { min: 450, max: 1200 } as const;
 
 /** a landing from at least this far (a double jump's arc, a drop off a table) gives at the knees — never an
  *  ordinary hop's (11.7). Decided by each body from its own arc, so every viewer plays the same. */
@@ -135,6 +144,63 @@ const ROLL_POSE = {
  *  from it; the lead arm reaching forward-down and a little out, the trail arm drawn in and bent */
 const ROLL_SIDE = { spineSide: 0.28, headTilt: 0.38, headTurn: 0.3, leadFwd: 0.55, leadOut: 0.25, leadElbow: -0.45, trailIn: 0.35, trailElbow: 0.6 } as const;
 
+// ---- PARKOUR V2: THE VAULT AND THE MANTLE, keyframed limb by limb ---------------------------------------------
+/** one key: every joint angle (radians; directions as for Posture), L = the LEAD side (bone index 0), T = the trail,
+ *  plus the root's bank onto the lead side and its forward pitch. Every value inside the joint limits above, except
+ *  the mantle's overhead reach, which lifts the shoulders to ~115° — still a comfortable human reach. */
+type Limbs = {
+  hipL: number; hipT: number; kneeL: number; kneeT: number;
+  spine: number; side: number; chin: number;
+  armL: number; armT: number; inL: number; inT: number; elbowL: number; elbowT: number;
+  bank: number; pitch: number;
+};
+const L0: Limbs = { hipL: 0, hipT: 0, kneeL: 0, kneeT: 0, spine: 0, side: 0, chin: 0, armL: 0, armT: 0, inL: 0, inT: 0, elbowL: 0, elbowT: 0, bank: 0, pitch: 0 };
+const K = (t: number, v: Partial<Limbs>): { t: number; v: Limbs } => ({ t, v: { ...L0, ...v } });
+const TRAVERSE_KEYS: Readonly<Record<"vault" | "mantle", readonly { t: number; v: Limbs }[]>> = {
+  vault: [
+    K(0, {}),
+    // takeoff: a dip at the knees, the torso over them, both hands reaching forward-down for the top
+    K(0.16, { hipL: 0.55, hipT: 0.55, kneeL: 0.8, kneeT: 0.8, spine: 0.3, chin: 0.1, armL: 0.95, armT: 0.85, elbowL: 0.25, elbowT: 0.3, pitch: 0.18 }),
+    // the lead hand planted, the arm straight under the weight; hips and knees drawn up, the body banked so the
+    // legs pass beside the hand; the trail arm out for balance
+    K(0.4, { hipL: 1.55, hipT: 1.35, kneeL: 1.5, kneeT: 1.7, spine: 0.38, side: 0.22, chin: 0.15, armL: 0.6, armT: 0.75, inL: 0.05, inT: -0.5, elbowL: 0.1, elbowT: 0.6, bank: 0.42, pitch: 0.22 }),
+    // over: the legs reach down for the floor, the hand comes off
+    K(0.66, { hipL: 0.55, hipT: 0.4, kneeL: 0.35, kneeT: 0.3, spine: 0.15, side: 0.08, armL: 0.55, armT: 0.5, inT: -0.3, elbowL: 0.35, elbowT: 0.4, bank: 0.12, pitch: 0.08 }),
+    // the landing gives at the knees and hips, arms forward for balance
+    K(0.84, { hipL: 0.95, hipT: 0.95, kneeL: 1.45, kneeT: 1.45, spine: 0.28, chin: 0.08, armL: 0.45, armT: 0.45, inL: -0.12, inT: -0.12, elbowL: 0.45, elbowT: 0.45 }),
+    K(1, {}),
+  ],
+  mantle: [
+    K(0, {}),
+    // reach up and grip the edge
+    K(0.16, { hipL: 0.25, hipT: 0.25, kneeL: 0.45, kneeT: 0.45, spine: -0.05, chin: -0.15, armL: 2.0, armT: 2.0, elbowL: 0.25, elbowT: 0.25 }),
+    // pull: the elbows bend and the hands come down toward the chest, the legs hang bent
+    K(0.42, { hipL: 0.45, hipT: 0.3, kneeL: 0.75, kneeT: 0.6, spine: 0.22, chin: 0.1, armL: 1.15, armT: 1.15, elbowL: 1.7, elbowT: 1.7, pitch: 0.12 }),
+    // press over the edge: arms straight down at the sides, torso well forward, the lead knee up onto the top
+    K(0.62, { hipL: 1.7, hipT: 0.35, kneeL: 2.0, kneeT: 0.7, spine: 0.6, chin: 0.18, armL: -0.25, armT: -0.25, elbowL: 0.2, elbowT: 0.2, pitch: 0.32 }),
+    // the trail foot follows; up over the lead foot
+    K(0.82, { hipL: 0.85, hipT: 0.8, kneeL: 1.1, kneeT: 1.2, spine: 0.3, chin: 0.08, armL: 0.35, armT: 0.35, elbowL: 0.4, elbowT: 0.4, pitch: 0.1 }),
+    K(1, {}),
+  ],
+};
+/** the feet are planted (the body lowers over them) during these spans */
+const TRAVERSE_PLANTED: Readonly<Record<"vault" | "mantle", (t: number) => boolean>> = {
+  vault: (t) => t < 0.14 || t > 0.8,
+  mantle: (t) => t > 0.84,
+};
+/** where the traversal's bank and pitch turn: about the hips */
+const TRAVERSE_PIVOT = 0.5;
+function limbsAt(move: "vault" | "mantle", t: number): Limbs {
+  const keys = TRAVERSE_KEYS[move];
+  let i = 0;
+  while (i < keys.length - 2 && t > keys[i + 1].t) i++;
+  const a = keys[i], b = keys[i + 1];
+  const k = smooth(a.t, b.t, t);
+  const out = { ...L0 };
+  for (const n of Object.keys(L0) as (keyof Limbs)[]) out[n] = a.v[n] + (b.v[n] - a.v[n]) * k;
+  return out;
+}
+
 const _wq = new THREE.Quaternion();
 const _X = new THREE.Vector3(), _Z = new THREE.Vector3(), _v = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0), RIGHT = new THREE.Vector3(1, 0, 0), FWD = new THREE.Vector3(0, 0, 1);
@@ -172,13 +238,15 @@ export class ParkourPose {
   get articulated(): boolean { return this.rig !== null; }
   get active(): ParkourMove | null { return this.move; }
 
-  /** Start a move from its beginning (replacing whatever was playing). */
-  start(move: ParkourMove, durationMs?: number): void {
+  /** Start a move from its beginning (replacing whatever was playing) — or `atMs` into it (PARKOUR V2: a relay that
+   *  arrived late, so the pose stays in step with the line and height already that far along). */
+  start(move: ParkourMove, durationMs?: number, atMs = 0): void {
     this.move = move;
-    this.elapsed = 0;
-    this.duration = move === "roll" && durationMs !== undefined && Number.isFinite(durationMs)
-      ? Math.min(ROLL_MS_RANGE.max, Math.max(ROLL_MS_RANGE.min, durationMs))
+    const range = move === "roll" ? ROLL_MS_RANGE : move === "vault" || move === "mantle" ? TRAVERSE_MS_RANGE : null;
+    this.duration = range && durationMs !== undefined && Number.isFinite(durationMs)
+      ? Math.min(range.max, Math.max(range.min, durationMs))
       : PARKOUR_MS[move];
+    this.elapsed = Math.min(Math.max(0, atMs), this.duration - 1);
   }
 
   /** A flip still turning when the feet land: finish it over a short tail rather than snapping upright. */
@@ -209,6 +277,7 @@ export class ParkourPose {
     const move = this.move;
     if (t >= 1) { this.cancel(); return; }
     if (move === "roll") { this.updateRoll(t); return; }
+    if (move === "vault" || move === "mantle") { this.updateTraverse(move, t); return; }
     const f = frameAt(move, t);
 
     // 1. the clip's pose back (or saved), exactly as gaitPose does
@@ -313,6 +382,51 @@ export class ParkourPose {
       if (Number.isFinite(low)) this.node.position.y += floor + ROLL_CONTACT - low;
     }
     this.node.updateMatrixWorld(true);
+    for (let i = 0; i < rig.bones.length; i++) this.written[i].copy(rig.bones[i].quaternion);
+    this.wrote = true;
+  }
+
+  /** PARKOUR V2 — A VAULT OR A MANTLE, one frame (see TRAVERSE_KEYS). */
+  private updateTraverse(move: "vault" | "mantle", t: number): void {
+    const f = limbsAt(move, t);
+    const rig = this.rig;
+    if (rig) this.restoreClip(rig);
+    // root: bank onto the lead side and pitch forward, about the hips
+    this.node.quaternion.setFromAxisAngle(RIGHT, f.pitch).premultiply(_qb.setFromAxisAngle(FWD, -f.bank));
+    const pivot = _v.set(0, this.height * TRAVERSE_PIVOT, 0);
+    this.node.position.copy(pivot).sub(pivot.clone().applyQuaternion(this.node.quaternion));
+    this.node.updateMatrixWorld(true);
+    if (!rig) return;
+    const planted = TRAVERSE_PLANTED[move](t);
+    const footBefore = planted ? this.lowestFoot(rig) : NaN;
+    this.node.getWorldQuaternion(_wq);
+    _X.copy(RIGHT).applyQuaternion(_wq);
+    _Z.copy(FWD).applyQuaternion(_wq);
+    const n = rig.spines.length;
+    rig.spines.forEach((b, i) => {
+      const share = (2 * (i + 1)) / (n * (n + 1));
+      rotateWorld(b, about(_X, f.spine * share));
+      if (f.side) rotateWorld(b, about(_Z, -f.side * share));
+    });
+    if (rig.neck) rotateWorld(rig.neck, about(_X, f.chin));
+    rig.arms.forEach((arm, i) => {
+      const lead = i === 0, side = lead ? 1 : -1;
+      rotateWorld(arm, about(_X, -(lead ? f.armL : f.armT)));
+      const inward = lead ? f.inL : f.inT;
+      if (inward !== 0) rotateWorld(arm, about(_Z, -side * inward));
+      rotateWorld(rig.fores[i], about(_X, -(lead ? f.elbowL : f.elbowT)));
+    });
+    rig.thighs.forEach((thigh, i) => {
+      const lead = i === 0;
+      rotateWorld(thigh, about(_X, -(lead ? f.hipL : f.hipT)));
+      rotateWorld(rig.shins[i], about(_X, lead ? f.kneeL : f.kneeT));
+    });
+    this.node.updateMatrixWorld(true);
+    if (planted) {
+      const footAfter = this.lowestFoot(rig);
+      if (Number.isFinite(footBefore) && Number.isFinite(footAfter)) this.node.position.y += footBefore - footAfter;
+      this.node.updateMatrixWorld(true);
+    }
     for (let i = 0; i < rig.bones.length; i++) this.written[i].copy(rig.bones[i].quaternion);
     this.wrote = true;
   }

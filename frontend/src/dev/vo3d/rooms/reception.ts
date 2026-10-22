@@ -168,6 +168,16 @@ export const RECEPTION_WALLS: Rect[] = (() => {
   ];
 })();
 
+/** PARKOUR V2 — THE RAIL SECTIONS APPROVED FOR VAULTING: the two balustrade runs (RECEPTION_WALLS 0 and 1), by the
+ *  id derived navigation gives a room's wall (nav/solids roomSolids: `${roomId}#wall${i}`), at the rail's height.
+ *  This list IS the approval: the façade runs, every other room's walls and front walls are never on it, whatever
+ *  their height. They are VAULT-ONLY — at 3 units the rail is far narrower than the body's footprint, so nobody
+ *  stands on it — and crossing one is still asked of the office-boundary rule (player/traversal `mayEnter`), so it
+ *  is never a way round the gates for an employee without a confirmed check-in. */
+export const RECEPTION_VAULT_RAILS: readonly { id: string; rect: Rect; top: number }[] = [0, 1].map((i) => ({
+  id: `${RECEPTION_ROOM_ID}#wall${i}`, rect: RECEPTION_WALLS[i], top: STRUCT.railHeight,
+}));
+
 export const RECEPTION_ROOM: RoomDef = {
   id: RECEPTION_ROOM_ID,
   name: "Reception",

@@ -75,4 +75,24 @@ describe("movementSync — the parkour relay", () => {
     expect(emit.mock.calls.at(-1)).toEqual(["walk_arrived", expect.objectContaining({ feet: 15.6 })]);
     mod.__resetForTests();
   });
+
+  it("PARKOUR V2: a vault or a mantle carries its duration and bounded heights, both ways; nothing else rides along", async () => {
+    const { mod, handlers, emit } = await socket();
+    const seen: unknown[] = [];
+    mod.subscribePeerParkour((e) => seen.push(e));
+    const fire = handlers.get("peer_parkour")!;
+    fire({ email: "a@b.c", at: 20, kind: "vault", seq: 1, ms: 640, rise: 0, apex: 25, to: { x: 1 } });
+    fire({ email: "a@b.c", at: 21, kind: "mantle", seq: 2, ms: 900, rise: 24, apex: 24 });
+    fire({ email: "a@b.c", at: 22, kind: "mantle", seq: 3, ms: 900, rise: 400, apex: -1 });
+    fire({ email: "a@b.c", at: 23, kind: "double", seq: 4, rise: 5, apex: 5 });
+    expect(seen).toEqual([
+      { email: "a@b.c", at: 20, kind: "vault", seq: 1, ms: 640, rise: 0, apex: 25 },
+      { email: "a@b.c", at: 21, kind: "mantle", seq: 2, ms: 900, rise: 24, apex: 24 },
+      { email: "a@b.c", at: 22, kind: "mantle", seq: 3, ms: 900 },
+      { email: "a@b.c", at: 23, kind: "double", seq: 4 },
+    ]);
+    mod.emitParkour("vault", 10, 640, { rise: 0, apex: 25 });
+    expect(emit.mock.calls.at(-1)).toEqual(["parkour", { kind: "vault", seq: 10, ms: 640, rise: 0, apex: 25 }]);
+    mod.__resetForTests();
+  });
 });

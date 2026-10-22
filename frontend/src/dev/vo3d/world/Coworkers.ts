@@ -64,7 +64,8 @@ import { standablePointNear, type StandTest } from "../player/PlayerBody";
 import { AIRBORNE_POSE_PHASE, JUMP_DURATION_MS, PlayerJump } from "../player/PlayerJump";
 import { LAND_ABSORB_FALL, ParkourPose, PARKOUR_MS, type ParkourMove } from "../avatar/parkourPose";
 import type { Vo3dCoworker, Vo3dWalkPacing } from "../app/coworkers";
-import { DOOR_LOOKAHEAD, PLAYER_SPRINT_SPEED } from "../player/PlayerMode";
+import { doorLookahead, PLAYER_SPRINT_SPEED } from "../player/PlayerMode";
+import { traverseHeight, traverseProgress, type TraverseKind } from "../player/traversal";
 import { gaitRate, locomotion, sprintStride } from "../avatar/gait";
 import { SeatedWork } from "../human/seatedWork";
 import type { DoorBody } from "../interact/Door";
@@ -120,6 +121,8 @@ const ROLL_STALE_MS = PARKOUR_MS.roll;
 /** a relayed roll that finds the body still in the air waits for its landing — but no longer than the longest arc
  *  there is (a double jump's), so it is never held for a landing that is not coming */
 const ROLL_WAIT_MS = 900;
+/** PARKOUR V2 — how long after a traversal's relay its own walk may still arrive and be adopted as its line */
+const TRAVERSE_ADOPT_MS = 300;
 /** how fast a standing body eases onto a new floor height (a furniture top, a ramp), per second */
 const GROUND_EASE = 14;
 
@@ -458,6 +461,10 @@ class CoworkerBody {
   private readonly parkourFx = new ParkourPose(BON_STANDING_HEIGHT);
   /** a relayed roll that arrived while this body was still in the air: played on its landing, if soon enough */
   private pendingRoll = 0;
+  /** PARKOUR V2 — a relayed vault or mantle being replayed: the same line and height curves the traverser ran
+   *  (player/traversal), from where this body stood to the end of the walk it published with it. `to` is null when
+   *  no walk has arrived for it (the body then rises or arcs in place and the walk, if it comes, moves it). */
+  private trav: { kind: TraverseKind; elapsed: number; ms: number; from: Vec2; to: Vec2 | null; startY: number; endY: number; apex: number; want: number } | null = null;
   /** PHASE 6C — the seat anchor this body is seated in, or null while standing/walking. */
   seatedIn: string | null = null;
   /** The clips-and-scale reading the seated pose is computed from — the shared prototype's, which is the
@@ -556,6 +563,54 @@ class CoworkerBody {
   /** the relayed roll's own duration (its published travel takes exactly this long) */
   private rollMs: number | undefined;
 
+  /** PARKOUR V2 — A RELAYED VAULT OR MANTLE, `ageMs` into it. Its line is the walk published with it (already
+   *  replaying, or adopted when it arrives just after); its HEIGHTS are the traverser's (`rise` from the feet to the
+   *  end, `apex` above the start), but the end is honoured only where it is a real top under the body there — a
+   *  relayed number can never perch anybody. Refused while seated or riding. */
+  traverse(kind: TraverseKind, ms: number, rise: number, apex: number, ageMs = 0): boolean {
+    if (this.seatedIn !== null || this.scooterRide) return false;
+    const startY = this.vertical.airborne ? this.vertical.feet : this.groundY();
+    this.vertical.reset();
+    const to = this.replay ? this.replay.end : null;
+    const endY = this.validFeet(to ?? this.pos, startY + rise);
+    this.trav = { kind, elapsed: Math.max(0, ageMs), ms, from: this.pos, to, startY, endY, apex: Math.max(endY, Math.min(startY + apex, Math.max(startY, endY) + 40)), want: startY + rise };
+    this.parkourFx.start(kind, ms, ageMs);
+    return true;
+  }
+  /** is a relayed vault or mantle playing on this body? */
+  get traversing(): boolean { return this.trav !== null; }
+
+  /** a published height, honoured only as the ground or a real top under `at` */
+  private validFeet(at: Vec2, feet: number): number {
+    const base = this.ground ? this.ground(at) : 0;
+    if (!Number.isFinite(feet) || feet <= base + 0.5) return base;
+    const top = this.topAt ? this.topAt(at, feet) : null;
+    return top !== null && top > base ? top : base;
+  }
+
+  /** one frame of a replayed traversal: x/z along its line (over the walk replay underneath it), and its height.
+   *  Returns the feet, or null when none is playing. */
+  private stepTraverse(dt: number): number | null {
+    const tr = this.trav;
+    if (!tr) return null;
+    tr.elapsed += dt * 1000;
+    const u = Math.min(1, tr.elapsed / Math.max(1, tr.ms));
+    if (tr.to) {
+      const s = traverseProgress(tr.kind, u);
+      this.root.position.x = tr.from.x + (tr.to.x - tr.from.x) * s;
+      this.root.position.z = tr.from.z + (tr.to.z - tr.from.z) * s;
+      const dx = tr.to.x - tr.from.x, dz = tr.to.z - tr.from.z;
+      if (Math.hypot(dx, dz) > 1e-3) { this.yaw = Math.atan2(dx, dz); this.root.rotation.set(0, this.yaw, 0); }
+    }
+    if (u >= 1) {
+      this.trav = null;
+      // ON THE TOP it climbed to, until a published height says otherwise (validated where it ends, as always)
+      if (tr.endY > (this.ground ? this.ground(this.pos) : 0) + 0.5) this.elevation = tr.endY;
+      return tr.endY;
+    }
+    return traverseHeight(tr.kind, u, tr.startY, tr.endY, tr.apex);
+  }
+
   /** which tumble is playing on this body, for the tests and the dev surface */
   get tumbling(): ParkourMove | null { return this.parkourFx.active; }
 
@@ -567,6 +622,7 @@ class CoworkerBody {
   private land(): void {
     this.parkourFx.cancel();
     this.pendingRoll = 0;
+    this.trav = null;
     if (!this.vertical.airborne && this.root.position.y === 0) return;
     this.vertical.reset();
     this.root.position.y = 0;
@@ -678,7 +734,8 @@ class CoworkerBody {
     const h = this.travelHeading;
     if (h === null) return { pos: this.pos, path: EMPTY_ROUTE };
     const p = this.pos;
-    return { pos: p, path: [{ x: p.x + Math.sin(h) * DOOR_LOOKAHEAD, z: p.z - Math.cos(h) * DOOR_LOOKAHEAD }] };
+    // (sin h, cos h): the travel heading's own convention — see player/PlayerMode doorLookahead (PARKOUR V2 fix)
+    return { pos: p, path: [doorLookahead(p, h)] };
   }
   /** The movement this body has been given, running or finished, so a re-push of the same one is
    *  recognised and ignored. See `playedId`. */
@@ -707,6 +764,19 @@ class CoworkerBody {
     this.locomotion = locomotion(this.runtime, this.replay.meanSpeed, this.replay.meanSpeed >= RUN_FROM_SPEED, this.actions[CLIP_RUN] !== undefined, null).clip;
     const at = this.replay.position;
     this.root.position.set(at.x, 0, at.z);
+    // PARKOUR V2 — a walk arriving just after a traversal's relay is ITS OWN walk, ADOPTED as its line (the relay may
+    // have found the previous leg still replaying, so whatever line it took is replaced). The traverser's keys are
+    // locked for the whole move (≥ 450 ms), so nothing newer can come from them that soon. Any later walk is newer
+    // movement, and newer movement always wins: the traversal stops where it is.
+    const tr = this.trav;
+    if (tr) {
+      if (tr.elapsed < TRAVERSE_ADOPT_MS) {
+        tr.from = this.pos;
+        tr.to = this.replay.end;
+        tr.endY = this.validFeet(this.replay.end, tr.want);
+        tr.apex = Math.max(tr.apex, tr.endY);
+      } else { this.trav = null; this.parkourFx.cancel(); }
+    }
   }
 
   /** PHASE 6C — SIT THIS BODY IN `anchor`, at the pose the world resolved for it. The root is put where
@@ -1003,11 +1073,18 @@ class CoworkerBody {
       // applied. `play` is guarded on the current clip, so re-asserting it per frame costs nothing.
       if (!airborne) this.play(this.restingClip);
     }
+    // PARKOUR V2 — a replayed vault or mantle owns the line and the height while it plays
+    const travY = this.stepTraverse(dt);
+    if (travY !== null) this.gait.set(null);
     // PARKOUR V1 — a flip or a roll is posed over the NEUTRAL stance (the idle's first frame), so the tuck is
     // symmetric rather than built on a frozen stride; the layer gives the clip back when it ends
-    const tumbling = this.parkourFx.active === "flip" || this.parkourFx.active === "roll";
+    const fx = this.parkourFx.active;
+    const tumbling = fx === "flip" || fx === "roll" || fx === "vault" || fx === "mantle";
     if (tumbling) this.freezeAt(CLIP_IDLE, 0);
-    if (airborne) {
+    if (travY !== null) {
+      this.root.position.y = travY;
+      moved = true;
+    } else if (airborne) {
       // IN THE AIR, over whatever the branches above decided the body was doing horizontally — the
       // walk replay keeps advancing x/z underneath, which is what makes a jump mid-walk read as a
       // jump mid-walk rather than a hop from a standstill.
@@ -1719,13 +1796,17 @@ export class Coworkers {
    *  each against its own length, and the same per-sender order: a relay older than the last one applied for
    *  that person, or the same one again, is dropped — so a late first jump can never add a hop after its
    *  double, and nothing plays twice. A reconnect replays none of these (they are never in a snapshot). */
-  parkour(email: string, kind: "double" | "roll", ageMs = 0, at?: number, seq?: number, ms?: number): boolean {
-    if (ageMs > (kind === "double" ? DOUBLE_STALE_MS : ms ?? ROLL_STALE_MS)) return false;
+  parkour(email: string, kind: "double" | "roll" | "vault" | "mantle", ageMs = 0, at?: number, seq?: number, ms?: number, rise = 0, apex = 0): boolean {
+    // PARKOUR V2 — a vault or a mantle is stale once it would have finished (its own duration)
+    const life = kind === "double" ? DOUBLE_STALE_MS : kind === "roll" ? ms ?? ROLL_STALE_MS : ms ?? PARKOUR_MS[kind];
+    if (ageMs > life) return false;
     const key = email.trim().toLowerCase();
     if (!this.inOrder(key, at, seq)) return false;
     const body = this.bodies.get(key);
     if (!body) return false;
-    const took = kind === "double" ? body.doubleJump() : body.roll(ms);
+    const took = kind === "double" ? body.doubleJump()
+      : kind === "roll" ? body.roll(ms)
+      : body.traverse(kind, ms ?? PARKOUR_MS[kind], rise, apex, ageMs);
     if (took) this.deps.onChanged?.("position");
     return took;
   }

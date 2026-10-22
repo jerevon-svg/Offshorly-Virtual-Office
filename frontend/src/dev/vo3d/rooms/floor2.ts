@@ -77,10 +77,11 @@ export const onFloor2 = (p: Vec2): boolean => pointInRect(p, OUTER_RECT);
  *  ROUTING of the question, not a relaxation: the perimeter wall, the lift core and every glass wall,
  *  table and lounge piece of the Meeting Floor genuinely stop a body, and this is the only place that
  *  is decided. */
-export function floor2StandTest(p: Vec2, radius: number): boolean {
+export function floor2StandTest(p: Vec2, radius: number, ignore?: ReadonlySet<string>): boolean {
   if (!pointInRect(p, growRect(FLOOR_RECT, -radius))) return false;
-  // the lift entrance with its doors SHUT — rooms/elevator clearsClosedElevator; a ride is asked first
-  return clearsClosedElevator(ELEVATOR, p, radius) && clearsMeetingFloor(p, radius);
+  // the lift entrance with its doors SHUT — rooms/elevator clearsClosedElevator; a ride is asked first.
+  // `ignore` (PARKOUR V2): furniture tops this body's feet have cleared — never a wall, glass or a shut doorway
+  return clearsClosedElevator(ELEVATOR, p, radius) && clearsMeetingFloor(p, radius, ignore);
 }
 
 export const FLOOR2_ROOM: RoomDef = {

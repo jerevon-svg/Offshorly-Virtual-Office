@@ -10,7 +10,7 @@ import {
   subscribeEnvironmentPreferences,
 } from "../../../services/settings/environmentPreferences";
 import { DESIGN_ROOM, CHAIR_4_ID, DOOR_ID, HERO_PLANT_ID, SHELL as DESIGN_SHELL } from "../rooms/design-room";
-import { RECEPTION_ROOM, COUNTER_INTERACTION_ID, FACADE as FACADE_SPEC, ENTRY_DOOR_EAST_ID, ENTRY_DOOR_WEST_ID, ENTRY_SCANNER_ID, ENTRY_ZONE, GATE, GATE_SCANNER_IDS, GATE_ZONES, KIOSK_INTERACTION_ID, KIOSK_SCANNER_ID, KIOSK_ZONE, LOUNGE_SEAT_IDS, RECEPTION_ROOM_ID } from "../rooms/reception";
+import { RECEPTION_ROOM, COUNTER_INTERACTION_ID, FACADE as FACADE_SPEC, ENTRY_DOOR_EAST_ID, ENTRY_DOOR_WEST_ID, ENTRY_SCANNER_ID, ENTRY_ZONE, GATE, GATE_SCANNER_IDS, GATE_ZONES, KIOSK_INTERACTION_ID, KIOSK_SCANNER_ID, KIOSK_ZONE, LOUNGE_SEAT_IDS, RECEPTION_ROOM_ID, RECEPTION_VAULT_RAILS } from "../rooms/reception";
 import { GAMING_ROOM,
   BAG_SEAT_IDS, DARTS_INTERACTION_ID, DOOR_LEAF_ID as GAMING_DOOR_ID, FRIDGE_INTERACTION_ID, GAMING_CHAIR_IDS,
   POSTER_INTERACTION_ID, SOFA_SEAT_ID, TV_INTERACTION_ID as GAMING_TV_INTERACTION_ID } from "../rooms/gaming";
@@ -74,7 +74,7 @@ import { DEMO_COMMAND, type JobCommandResult } from "../world/agentOrchestration
 import { LAB_FLAGS } from "../world/labFlags";
 import { LAB_RESIDENTS } from "../world/labPopulation";
 import { aiLabV2StandTest, inAiLabV2Zone, buildLabV2Graph, LAB2_FLOOR_Y, L1, L2, l1Rim, l2Rim } from "../world/ailabV2";
-import { CAMPUS_BENCH_TOP, StandableIndex, insidePolygon, standableFromBox, standableFromEntity } from "../world/standables";
+import { CAMPUS_BENCH_TOP, StandableIndex, insidePolygon, standableFromBox, standableFromEntity, standableFromRect } from "../world/standables";
 import { buildAiLabV2 } from "../build/ailabV2";
 import { MonkeyCastRunner } from "../avatar/MonkeyCastRunner";
 import { LAB_V2_SCENARIOS } from "../world/labV2Scenarios";
@@ -338,7 +338,7 @@ export interface Vo3dWorld {
    *  a body actually took off, for the verification surface. */
   peerJumped(email: string, ageMs?: number, at?: number, seq?: number): boolean;
   /** PARKOUR V1 — a peer double-jumped (with its flip) or rolled on landing; same staleness and ordering as a jump */
-  peerParkour(email: string, kind: "double" | "roll", ageMs?: number, at?: number, seq?: number, ms?: number): boolean;
+  peerParkour(email: string, kind: "double" | "roll" | "vault" | "mantle", ageMs?: number, at?: number, seq?: number, ms?: number, rise?: number, apex?: number): boolean;
   /** PHASE 5 — V1'S ANSWER ABOUT THIS EMPLOYEE'S WORK SESSION, pushed in from outside.
    *
    *  The world never asks: app/Vo3dHost.tsx owns the read (adapters/v1Attendance over V1's own
@@ -2350,6 +2350,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       s.kind === "bench" && s.id.startsWith("bench:") && "box" in s
         ? [standableFromBox(s.id, ground.groundAt({ x: s.box.x, z: s.box.z }).y + CAMPUS_BENCH_TOP, s.box)]
         : []),
+    // PARKOUR V2 — every floor above this one that declares its own (the Meeting Floor today; a future floor opts in
+    // through its plate's `standables`), by the ids its own stand test excuses
+    ...UPPER_PLATES.flatMap((plate) => plate.standables?.() ?? []),
+    // PARKOUR V2 — the Reception rail sections approved for vaulting (rooms/reception): vault-only, never a top
+    ...RECEPTION_VAULT_RAILS.map((r) => standableFromRect(r.id, r.top, r.rect, { stand: false, vault: true })),
   ]);
   /** how close to a piece's outline a body's centre must be to stand on it: well inside the body radius, so a body
    *  beside a piece (held NAV_RADIUS off it at floor level) is never mistaken for one on top of it */
@@ -2366,14 +2371,18 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // `motion` (TRAVERSAL): a body moving with known feet — the campus judges its edges against them (a jump
   // clears a ledge its feet clear; see world/exteriorGround TraversalState), and (PARKOUR V1) both the office and
   // the campus stop treating a standable top as solid once those feet have cleared it.
-  const playerStand = (p: Vec2, motion?: TraversalState): boolean =>
+  //  `excuse` (PARKOUR V2): the ONE obstacle a planned vault is crossing (player/traversal) — added to what the feet
+  //  have cleared, on the floors that can name their pieces; everything else is judged exactly as before.
+  const withExcuse = (a: ReadonlySet<string> | undefined, b: ReadonlySet<string> | undefined): ReadonlySet<string> | undefined =>
+    !b ? a : !a ? b : new Set([...a, ...b]);
+  const playerStand = (p: Vec2, motion?: TraversalState, excuse?: ReadonlySet<string>): boolean =>
     inCave(p) ? caveStandTest(p, NAV_RADIUS)
     : liftActive() && inCabin(p) ? cabinStandTest(p, NAV_RADIUS)
     : vestibuleOf(p) !== null ? vestibuleStandTest(vestibuleOf(p)!, p, NAV_RADIUS)
-    : onUpperFloor(p) ? upperFloorStand(p, NAV_RADIUS)
+    : onUpperFloor(p) ? upperFloorStand(p, NAV_RADIUS, withExcuse(clearedBy(p, motion), excuse))
     : inLabDomain(p) ? aiLabStandTest(p, NAV_RADIUS)
-    : inOfficeDomain(p) ? officeStand(p, undefined, clearedBy(p, motion))
-    : ground.canOccupy(p, WALK_PROFILE.footRadius, WALK_PROFILE, foreignOwner, clearedBy(p, motion), motion);
+    : inOfficeDomain(p) ? officeStand(p, undefined, withExcuse(clearedBy(p, motion), excuse))
+    : ground.canOccupy(p, WALK_PROFILE.footRadius, WALK_PROFILE, foreignOwner, withExcuse(clearedBy(p, motion), excuse), motion);
   /** is `p` judged by the campus ground model (not a floor of the building, the Lab's, the Cave or the lift)? */
   const onCampus = (p: Vec2): boolean =>
     !(inCave(p) || (liftActive() && inCabin(p)) || vestibuleOf(p) !== null || onUpperFloor(p) || inLabDomain(p) || inOfficeDomain(p));
@@ -2692,6 +2701,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   const playerMode = new PlayerMode({
     avatar, stack, world, canStand: (p: Vec2, motion?: TraversalState) => playerStand(p, motion) && !(carBlocks?.(p, NAV_RADIUS) ?? false), cameraProbe: playerCameraProbe,
     support: playerSupport, dropMax: WALK_PROFILE.dropMax, groundAt: playerGround, headroom: headroomAt,
+    // PARKOUR V2 — the vault and the mantle (player/traversal): the same stand test (cars included) with at most the
+    // one vaulted obstacle excused, the index's vault obstacles, and the office boundary — no confirmed check-in, no
+    // traversal that lands inside the working office (the Reception rail is never a way round the gates)
+    traversal: {
+      stand: (p, ctx, ignore) => playerStand(p, ctx, ignore) && !(carBlocks?.(p, NAV_RADIUS) ?? false),
+      vaultables: (p, r) => standables.vaultables(p, r),
+      mayEnter: (_from, to) => mayPlaceAt(to),
+    },
     // the target marker hangs off the SCENE, not the office group: the CAVE hides the whole office while
     // you are inside it, and a marker parented to that group would vanish with it
     camera: R.playerCamera, canvas, overlayRoot: R.scene,
@@ -2739,7 +2756,18 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // would have to be smuggled into a leg that may not exist (a standing jump publishes nothing at all)
   // or into one that started 300 ms ago. One call, one relay, no state. The standalone dev page's sink
   // is absent and one there stays local, exactly as everything else does.
-  playerMode.onJumped = (kind, roll) => {
+  playerMode.onJumped = (kind, roll, traverse) => {
+    // PARKOUR V2 — A VAULT OR A MANTLE MOVES THE BODY TOO: its line goes out as an ordinary walk of its own duration
+    // (late joiners and the snapshot get the end position from it), the height it ends at first — so the walk says
+    // the feet stand on the top it climbs to, which peers honour only where that top really is — then the action,
+    // with the heights its curves need. Every peer replays the same line and curves (world/Coworkers).
+    if (traverse) {
+      const endsOnTop = traverse.endFeet > avatar.groundAt(traverse.to) + 0.5;
+      selfMovement?.noteFeet?.(endsOnTop ? traverse.endFeet : undefined);
+      selfFeed?.planned(traverse.from, [traverse.to], traverse.ms, "linear");
+      selfMovement?.jumped?.(kind, traverse.ms, { rise: traverse.endFeet - traverse.startFeet, apex: traverse.apex - traverse.startFeet });
+      return;
+    }
     // PARKOUR V1 — A ROLL MOVES THE BODY: its planned travel is published as an ordinary walk (decel pacing, the
     // roll's own duration) so every peer moves them along the same path while playing the same roll — a relayed
     // animation alone would leave peers seeing them slide or snap. Then the action itself, with its duration.
@@ -6556,7 +6584,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // the same per-frame guards the loop applies: a door held shut, a locked room, the exit gate
       applyExitGate({ x: bp.x, z: bp.z });
       applyRoomLocks({ x: bp.x, z: bp.z });
-      selfFeed?.frame(step, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0 || coworkerApproach?.turning === true || directedTurn !== null || playerMode.rolling);
+      selfFeed?.frame(step, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0 || coworkerApproach?.turning === true || directedTurn !== null || playerMode.rolling || playerMode.traversing);
       left -= step;
     }
   }
@@ -6663,7 +6691,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       if (playerMode.active) playerMode.update(dt / 1000);
       // PARKOUR V1 — tell the publisher how high the feet stand (a furniture top) so peers and late joiners see it;
       // undefined on the floor, in the air, or whenever Player View does not own the body (a seat, a walk)
-      if (selfMovement?.noteFeet) {
+      // (PARKOUR V2: while a vault or a mantle runs, the height it ends at was noted when it started — left as is)
+      if (selfMovement?.noteFeet && !playerMode.traversing) {
         const fp = avatar.worldPosition();
         const top = topUnder(fp);
         const owns = playerMode.active && stack.owns("Player") && !playerMode.airborne;
@@ -6738,7 +6767,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       driftFx.update(dt / 1000);
       // a sprint's skid goes out as a braking leg (peers replay it slowing down, the pose with it)
       selfFeed?.setBraking(playerMode.active ? playerMode.state.braking : 0);
-      selfFeed?.frame(dt, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0 || coworkerApproach?.turning === true || directedTurn !== null || playerMode.rolling);
+      selfFeed?.frame(dt, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0 || coworkerApproach?.turning === true || directedTurn !== null || playerMode.rolling || playerMode.traversing);
       // PRESENCE'S zone: the Meeting Floor and the lift are inside the office (app/access presenceZoneAt),
       // so riding up is never read as leaving the building — and never as Away.
       const zoneNow = presenceZoneAt({ x: bp.x, z: bp.z }, accessGeom, onDetachedBuildingFloor);
@@ -8025,7 +8054,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       if (!handlers) selectedCoworker = null;
     },
     peerJumped: (email, ageMs = 0, at, seq) => coworkers.jump(email, ageMs, at, seq),
-    peerParkour: (email, kind, ageMs = 0, at, seq, ms) => coworkers.parkour(email, kind, ageMs, at, seq, ms),
+    peerParkour: (email, kind, ageMs = 0, at, seq, ms, rise, apex) => coworkers.parkour(email, kind, ageMs, at, seq, ms, rise, apex),
     setConversationPoses: (byEmail, self) => {
       hostConversationClips = byEmail;
       pushCoworkerClips();

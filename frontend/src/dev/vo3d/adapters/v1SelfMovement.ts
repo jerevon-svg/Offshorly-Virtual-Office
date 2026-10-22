@@ -138,12 +138,12 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
      *  is persisted: the server stamps the identity and the time and relays it, peers draw an arc from
      *  their own physics, and the employee's V1 position is untouched throughout. Deliberately NOT run
      *  through isUsablePosition — there is no position in it to judge. */
-    jumped(kind = "jump", ms) {
+    jumped(kind = "jump", ms, heights) {
       state.jumps = (state.jumps ?? 0) + 1;
       note(kind);
       actionSeq += 1;
       if (kind === "jump") emitJump(actionSeq);
-      else emitParkour(kind, actionSeq, ms);
+      else emitParkour(kind, actionSeq, ms, heights);
     },
     noteFeet(feet) {
       feetNow = feet !== undefined && Number.isFinite(feet) && feet > 0.5 ? Math.round(feet * 100) / 100 : undefined;

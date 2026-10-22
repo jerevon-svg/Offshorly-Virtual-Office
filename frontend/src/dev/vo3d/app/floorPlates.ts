@@ -21,7 +21,8 @@ import {
   ELEVATOR as FLOOR2_ELEVATOR, FLOOR2_ID, FLOOR2_ROOM, FLOOR_RECT as FLOOR2_FLOOR_RECT, FRAME as FLOOR2_FRAME,
   OUTER_RECT as FLOOR2_OUTER, floor2Regions, floor2StandTest,
 } from "../rooms/floor2";
-import { MEETING_ROOM_DEFS, meetingFloorEntities, meetingRoomRegions } from "../rooms/floor2Meeting";
+import { MEETING_ROOM_DEFS, meetingFloorEntities, meetingFloorStandables, meetingRoomRegions } from "../rooms/floor2Meeting";
+import type { Standable } from "../world/standables";
 import { FLOOR3, FLOOR4, type PlainFloorPlan } from "../rooms/plainFloor";
 import { FLOOR_ORDER, GROUND_FLOOR_ID, STOREY_H, exteriorDrop, type Vo3dFloorId } from "./floors";
 
@@ -37,8 +38,12 @@ export interface UpperFloorPlate {
   floorRect: Rect;
   /** "is this point on this floor at all?" — and what the world's bounds must cover */
   outer: Rect;
-  /** can a body of `radius` stand at `p`? The ONLY place that is decided for this floor. */
-  standTest(p: Vec2, radius: number): boolean;
+  /** can a body of `radius` stand at `p`? The ONLY place that is decided for this floor. `ignore` (PARKOUR V2):
+   *  ids of this plate's own traversal items the body's feet have cleared (see `standables`). */
+  standTest(p: Vec2, radius: number, ignore?: ReadonlySet<string>): boolean;
+  /** PARKOUR V2 — what on this plate can be stood on or vaulted (world/standables), by the same ids `standTest`
+   *  excuses. Absent = nothing: every piece blocks at every height. A future floor opts in by supplying it. */
+  standables?(): Standable[];
   /** what stands ON the plate (its rooms, entities and their regions), registered between the lift core's
    *  regions and the plate's own floor — priority is registration order */
   registerContents?(world: WorldState): void;
@@ -56,6 +61,7 @@ export const UPPER_PLATES: readonly UpperFloorPlate[] = [
     floorRect: FLOOR2_FLOOR_RECT,
     outer: FLOOR2_OUTER,
     standTest: floor2StandTest,
+    standables: meetingFloorStandables,
     // THE MEETING ROOMS: each a room of its own, owning its seats and its display walk-up; the Commons'
     // soft seating belongs to the plate. Their floors are regions BEFORE the plate's.
     registerContents: (world) => {
@@ -89,9 +95,9 @@ export function upperPlateAt(p: Vec2): UpperFloorPlate | null {
 export const onUpperFloor = (p: Vec2): boolean => upperPlateAt(p) !== null;
 
 /** the stand test of the plate `p` is on; false off every plate (callers ask `onUpperFloor` first) */
-export function upperFloorStand(p: Vec2, radius: number): boolean {
+export function upperFloorStand(p: Vec2, radius: number, ignore?: ReadonlySet<string>): boolean {
   const plate = upperPlateAt(p);
-  return plate !== null && plate.standTest(p, radius);
+  return plate !== null && plate.standTest(p, radius, ignore);
 }
 
 /** IS `p` ON A FLAT FLOOR OF THE BUILDING THAT STANDS OUTSIDE V1'S FRAME — an upper plate, or the lift's

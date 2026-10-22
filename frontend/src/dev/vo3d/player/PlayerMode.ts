@@ -33,6 +33,7 @@ import { AIRBORNE_POSE_PHASE, PlayerJump, WALK_JUMP } from "./PlayerJump";
 import { collectCandidates, cycleTarget, nearbyFixture, pickTarget, rankTargets, REACH, type Candidate, type Target } from "./PlayerTargeting";
 import { ScooterMotion, SCOOTER, SCOOTER_JUMP } from "./ScooterMotion";
 import { LAND_ABSORB_FALL, ROLL_MS_RANGE } from "../avatar/parkourPose";
+import { planMantle, planVault, traverseHeight, traverseProgress, VAULT, type TraversalWorld, type TraversePlan } from "./traversal";
 import { DRIFT, ScooterDrift } from "./ScooterDrift";
 import { ScooterHud } from "./ScooterHud";
 
@@ -50,7 +51,7 @@ const RIDE_IDLE_PHASE = 0;
  *  surface height, per second — a 1.5 tread in ~0.1 s reads as a step, not a snap or a float — and the
  *  change beyond which it is a relocation, not a step, and is taken at once. */
 /** PARKOUR V1 — what a relayed body action is (app/selfMovement carries it; world/Coworkers plays it) */
-export type ParkourKind = "jump" | "double" | "roll";
+export type ParkourKind = "jump" | "double" | "roll" | "vault" | "mantle";
 
 const GROUND_FOLLOW = 24;
 const GROUND_SNAP = 6;
@@ -67,6 +68,9 @@ const ROLL_SLOPE_MAX = 1.5;
 /** speed handed back to the run when the roll ends, units/s — a roll is a way of keeping going */
 const ROLL_EXIT_SPEED = 40;
 
+/** PARKOUR V2 — the speed a vault hands back to the run as the feet come down, units/s */
+const VAULT_EXIT_SPEED = 46;
+
 /** a planned roll: from where the feet landed, along the travel direction, `dist` units over `ms` */
 export type RollPlan = { from: Vec2; to: Vec2; dir: Vec2; dist: number; ms: number };
 const RIDE_CAMERA_FOLLOW = 3.2;
@@ -79,6 +83,9 @@ const RIDE_LOOK_HOLD = 1.2;
  *  one stride ahead but a coworker not at all is the asymmetry that let somebody walk through a shut
  *  door on the other browser. One number, one meaning, one place. */
 export const DOOR_LOOKAHEAD = 46;
+/** THE POINT A DOOR IS TOLD TO EXPECT A BODY AT: `look` units ahead of `p` along heading `h`, in headingFor's
+ *  convention (core/coords: h = atan2(dx, dz), so its unit vector is (sin h, cos h)). Shared with world/Coworkers. */
+export const doorLookahead = (p: Vec2, h: number, look = DOOR_LOOKAHEAD): Vec2 => ({ x: p.x + Math.sin(h) * look, z: p.z + Math.cos(h) * look });
 /** THE TWO GROUND SPEEDS, in units/s, and the single place either of them is stated.
  *
  *  2026-10-21: the WALK is a brisk 42 (a foot-locked WALK, never a jog, for the HumanBase cast — avatar/gait); the
@@ -164,6 +171,9 @@ export type PlayerDeps = {
   /** PARKOUR V1 — HEADROOM: the highest the FEET may rise at a point (a ceiling or a deck above, less the body).
    *  Absent = open sky. */
   headroom?: (p: Vec2) => number;
+  /** PARKOUR V2 — CONTEXTUAL TRAVERSAL (player/traversal): the world's vault obstacles, its stand test with one
+   *  vaulted obstacle excused, and its office-boundary rule. Absent = no vault and no mantle (Space only jumps). */
+  traversal?: Pick<TraversalWorld, "stand" | "vaultables" | "mayEnter">;
   /** DIRECTED MEETING — the meeting owns the chair, so no seat or walk-up is offered (E would be refused);
    *  a person is still a menu that moves nobody. Absent means never. */
   targetsSuppressed?: () => boolean;
@@ -428,6 +438,8 @@ export class PlayerMode {
     this.state.airborne = false;
     this.state.height = 0;
     this.roll = null;
+    // PARKOUR V2 — a vault or a mantle left half-done finishes at its landing (endTraverse), then steps off any top
+    if (this.traverse) { this.endTraverse(); this.d.avatar.setPosition(this.body.pos, this.baseY); }
     this.d.avatar.cancelTumble();
     this.stepOffTop();
     this.d.avatar.setPosition(this.d.avatar.position);
@@ -489,6 +501,14 @@ export class PlayerMode {
     // ON A SCOOTER, Space is the deck's hop: rider and deck leave together (updateRide), once per landing.
     // Not relayed — there is no scooter multiplayer yet, and a walking hop relayed from a deck would be a lie.
     if (this.ride) { this.ride.jump.start(this.ride.y); return; }
+    // PARKOUR V2 — a vault or a mantle in progress owns the body until it ends; Space waits for it
+    if (this.traverse) return;
+    // PARKOUR V2 — CONTEXTUAL TRAVERSAL OUTRANKS THE HOP, on the floor: running at a low eligible obstacle vaults
+    // it; facing a ledge within reach mantles onto it; anything else is the jump it always was.
+    if (!this.vertical.airborne) {
+      const plan = this.planGrounded();
+      if (plan) { this.startTraverse(plan); return; }
+    }
     // ONLY A JUMP THAT ACTUALLY TOOK IS PUBLISHED. `start` refuses one in mid-air, so a held Space, a
     // key repeat and a second press all produce exactly one relay — the traffic is bounded by the arc,
     // not by the keyboard.
@@ -498,14 +518,92 @@ export class PlayerMode {
     if (this.vertical.airJump(this.ceiling())) {
       this.d.avatar.tumble("flip");
       this.onJumped?.("double");
+      return;
     }
+    // PARKOUR V2 — THE GRAB: with the double jump spent, Space in the air near a ledge within the hands' reach
+    // hauls the body onto it
+    const grab = this.planGrab(this.heading);
+    if (grab) this.startTraverse(grab);
+  }
+
+  // ---- PARKOUR V2: THE VAULT AND THE MANTLE (player/traversal plans them; this runs them) --------------------
+  /** the vault or mantle in progress */
+  private traverse: (TraversePlan & { elapsed: number }) | null = null;
+  /** is a vault or a mantle carrying the body right now? (reported to the movement feed as movement) */
+  get traversing(): boolean { return this.traverse !== null; }
+  /** where the feet will stand when the traversal in progress ends (null when none) */
+  get traverseEndFeet(): number | null { return this.traverse ? this.traverse.endFeet : null; }
+
+  private traversalWorld(): TraversalWorld | null {
+    const t = this.d.traversal;
+    if (!t) return null;
+    return { ...t, ground: (p) => this.groundAt(p), headroom: (p) => this.d.headroom?.(p) ?? Infinity };
+  }
+
+  /** On the floor: a vault when running at an eligible obstacle, else a mantle onto a ledge ahead, else null. */
+  private planGrounded(): TraversePlan | null {
+    const w = this.traversalWorld();
+    if (!w) return null;
+    const p = this.body.pos, feet = this.groundAt(p);
+    // headingFor's convention: the unit vector of heading h is (sin h, cos h)
+    const dir = { x: Math.sin(this.heading), z: Math.cos(this.heading) };
+    if (this.momentum.speed >= VAULT.minSpeed) {
+      const v = Math.hypot(this.momentum.vx, this.momentum.vz);
+      const run = v > 1e-6 ? { x: this.momentum.vx / v, z: this.momentum.vz / v } : dir;
+      const vault = planVault(w, p, run, feet, this.body.radius);
+      if (vault) return vault;
+    }
+    return planMantle(w, p, dir, feet, this.body.radius);
+  }
+
+  /** In the air: a mantle onto a ledge the hands can reach along `heading`, or null. */
+  private planGrab(heading: number): TraversePlan | null {
+    const w = this.traversalWorld();
+    if (!w || !this.vertical.airborne) return null;
+    return planMantle(w, this.body.pos, { x: Math.sin(heading), z: Math.cos(heading) }, this.vertical.feet, this.body.radius, true);
+  }
+
+  private startTraverse(plan: TraversePlan): void {
+    this.landNow();
+    // the traversal owns the height from here, starting where the feet are (a grab starts in mid-air)
+    this.baseY = plan.startFeet;
+    this.traverse = { ...plan, elapsed: 0 };
+    this.momentum.reset();
+    this.heading = Math.atan2(plan.dir.x, plan.dir.z);
+    this.d.avatar.tumble(plan.kind, plan.ms);
+    this.onJumped?.(plan.kind, undefined, plan);
+  }
+
+  /** one frame of the traversal: along its validated line, at its own height. Returns the feet and the ground covered. */
+  private stepTraverse(dt: number): { y: number; travelled: number } {
+    const t = this.traverse!;
+    t.elapsed += dt * 1000;
+    const u = Math.min(1, t.elapsed / t.ms);
+    const s = traverseProgress(t.kind, u);
+    const prev = this.body.pos;
+    const next = { x: t.from.x + (t.to.x - t.from.x) * s, z: t.from.z + (t.to.z - t.from.z) * s };
+    this.body.pos = next;
+    const y = traverseHeight(t.kind, u, t.startFeet, t.endFeet, t.apex);
+    if (u >= 1) this.endTraverse();
+    return { y: u >= 1 ? t.endFeet : y, travelled: Math.hypot(next.x - prev.x, next.z - prev.z) };
+  }
+
+  /** THE TRAVERSAL ENDS — or is cut short — WHERE IT WAS PLANNED TO: its landing is the only point of it the stand
+   *  test vouched for with nothing excused, so a body is never left over (or inside) the obstacle it was crossing. */
+  private endTraverse(): void {
+    const t = this.traverse;
+    if (!t) return;
+    this.traverse = null;
+    this.body.pos = { x: t.to.x, z: t.to.z };
+    this.baseY = t.endFeet;
+    if (t.kind === "vault") { this.momentum.vx = t.dir.x * VAULT_EXIT_SPEED; this.momentum.vz = t.dir.z * VAULT_EXIT_SPEED; }
   }
 
   /** Told when this body really jumped, double-jumped (with its flip) or rolled on landing, so the world can
    *  relay it to the other browsers. A roll also carries its planned travel, which the world publishes as an
    *  ordinary walk so every peer moves the body along the same path. Null on the standalone dev page and in every
    *  test that does not care, exactly like `onLockState`. */
-  onJumped: ((kind: ParkourKind, roll?: RollPlan) => void) | null = null;
+  onJumped: ((kind: ParkourKind, roll?: RollPlan, traverse?: TraversePlan) => void) | null = null;
 
   /** PARKOUR V1 — the roll in progress: the body travels its plan on the same decel curve peers replay it on */
   private roll: (RollPlan & { elapsed: number }) | null = null;
@@ -655,10 +753,19 @@ export class PlayerMode {
       const wx = f.x * -axis.z + r.x * axis.x, wz = f.z * -axis.z + r.z * axis.x, wl = Math.hypot(wx, wz);
       if (wl > 1e-9) want = { x: wx / wl, z: wz / wl };
     }
-    // a landing roll owns the body's travel until it ends (stepRoll below); the keys wait for it
-    if (this.roll) want = null;
+    // a landing roll owns the body's travel until it ends (stepRoll below); the keys wait for it — and so do they
+    // for a vault or a mantle (PARKOUR V2), which also owns the height
+    const pushed = want;
+    if (this.roll || this.traverse) want = null;
     const m: MomentumStep = this.momentum.step(want, speed * (want ? Math.min(1, Math.hypot(axis.x, axis.z)) : 0), sprinting, dt);
-    if (this.roll) {
+    let traverseY: number | null = null;
+    if (this.traverse) {
+      const t = this.stepTraverse(dt);
+      traverseY = t.y;
+      this.baseY = t.y;
+      travelled = t.travelled;
+      this.state.blocked = false;
+    } else if (this.roll) {
       travelled = this.stepRoll(dt);
       this.state.blocked = false;
     } else if (m.dx || m.dz) {
@@ -695,6 +802,11 @@ export class PlayerMode {
     // and a landing hanging off an edge is set back onto the edge it caught.
     const sup = this.d.support;
     const landed = this.vertical.update(dt, sup ? sup(this.body.pos) : undefined, this.ceiling());
+    // PARKOUR V2 — THE AUTOMATIC GRAB: falling into a ledge while pushing toward it hauls the body up onto it
+    if (!landed && this.vertical.airborne && this.vertical.verticalSpeed < 0 && pushed && this.state.blocked && !this.traverse) {
+      const grab = this.planGrab(Math.atan2(pushed.x, pushed.z));
+      if (grab) this.startTraverse(grab);
+    }
     if (landed && sup) {
       this.settleLanding(this.body, this.vertical.feet, this.d.dropMax ?? Infinity);
       this.baseY = this.vertical.feet;
@@ -716,7 +828,7 @@ export class PlayerMode {
     this.state.airborne = this.vertical.airborne;
     this.state.height = this.vertical.height;
     this.state.feet = this.vertical.airborne ? this.vertical.feet : this.baseY;
-    this.d.avatar.setPosition(this.body.pos, this.vertical.airborne && sup ? this.vertical.feet : this.followGround(dt) + this.vertical.height);
+    this.d.avatar.setPosition(this.body.pos, traverseY ?? (this.traverse ? this.baseY : this.vertical.airborne && sup ? this.vertical.feet : this.followGround(dt) + this.vertical.height));
     // FIRST person locks the body to the view; THIRD turns it toward travel, which is what sells "Bon is
     // walking" rather than "Bon is being slid around".
     if (this.camera.view === "first") this.d.avatar.setYaw(this.camera.yaw);
@@ -731,11 +843,11 @@ export class PlayerMode {
     // THE GAIT'S SHAPE (avatar/gaitPose): the sprint's lean, stride and arm pump grow with the speed it is
     // actually doing; a skid plants a foot and leans back; a turn at speed banks. Off in the air.
     const sprintAmount = Math.max(0, Math.min(1, (this.momentum.speed - 80) / (PLAYER_SPRINT_SPEED - 80)));
-    const tumbling = this.d.avatar.tumbling === "flip" || this.d.avatar.tumbling === "roll";
+    const tumbling = this.d.avatar.tumbling === "flip" || this.d.avatar.tumbling === "roll" || this.d.avatar.tumbling === "vault" || this.d.avatar.tumbling === "mantle";
     this.d.avatar.setGait(this.vertical.airborne || tumbling ? null : { sprint: skidding ? 0 : sprintAmount, bank: m.bank, brake: m.brake, lead: this.skidLead });
 
     if (tumbling) {
-      // PARKOUR V1 — A FLIP OR A ROLL is articulated by avatar/parkourPose over the NEUTRAL stance (the idle's first
+      // PARKOUR V1/V2 — A FLIP, A ROLL, A VAULT OR A MANTLE is articulated by avatar/parkourPose over the NEUTRAL stance (the idle's first
       // frame), so the tuck is symmetric rather than built on a frozen stride; the clip comes back when it ends.
       this.d.avatar.freezeClipAt(CLIP_IDLE, 0);
     } else if (this.vertical.airborne) {
@@ -767,7 +879,9 @@ export class PlayerMode {
       this.doorIntent.length = 0;
       // (further ahead the faster it goes: a sprint reaches a door in under half the time a walk does)
       const look = Math.max(DOOR_LOOKAHEAD, this.momentum.speed * 0.45);
-      this.doorIntent.push({ x: this.body.pos.x + Math.sin(this.heading) * look, z: this.body.pos.z - Math.cos(this.heading) * look });
+      // headingFor's convention (core/coords): heading h travels along (sin h, cos h). This was −cos, which mirrored
+      // the lookahead along z — walking north told the doors to expect the body behind it (PARKOUR V2 fix).
+      this.doorIntent.push(doorLookahead(this.body.pos, this.heading, look));
     } else {
       this.doorIntent.length = 0;
     }
@@ -917,6 +1031,13 @@ export class PlayerMode {
   }
 
   private landNow(): void {
+    // PARKOUR V2 — a vault or a mantle cut short finishes at its landing (see endTraverse). The one place this
+    // writes x/z: the body must never be handed over standing inside the obstacle it was crossing.
+    if (this.traverse) {
+      this.endTraverse();
+      this.d.avatar.setPosition(this.body.pos, this.baseY);
+      if (this.d.avatar.tumbling) this.d.avatar.cancelTumble();
+    }
     this.roll = null;
     if (this.d.avatar.tumbling) this.d.avatar.cancelTumble();
     if (!this.vertical.airborne && this.state.height === 0) return;

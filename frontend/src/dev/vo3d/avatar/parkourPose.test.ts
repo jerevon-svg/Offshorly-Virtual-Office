@@ -202,3 +202,77 @@ describe.each(RIGS)("parkour pose on %s", (id) => {
     }
   });
 });
+
+// PARKOUR V2 — THE VAULT AND THE MANTLE, on the same real rigs: articulated limb by limb (hands planted / reaching,
+// hips and knees drawn up, a lead knee onto the top), never a rigid body slid over the obstacle.
+const bendOf = (rig: ReturnType<typeof findRig> & object, i: number): number => {
+  const hip = wp(rig.thighs[i]), knee = wp(rig.shins[i]), foot = wp(rig.feet[i]);
+  return knee.clone().sub(hip).angleTo(foot.clone().sub(knee));
+};
+/** how far a bone has turned from the clip's pose, radians. (The arms are measured as joint rotation, not hand
+ *  position: these rigs' bind pose holds the arms out in a T/A, unlike the idle frame the game poses over.) */
+const turned = (h: ReturnType<typeof holder>, bone: THREE.Object3D): number => {
+  const q = h.rest[h.rig.bones.indexOf(bone as THREE.Bone)];
+  return 2 * Math.acos(Math.min(1, Math.abs(bone.quaternion.clone().normalize().dot(q.clone().normalize()))));
+};
+function playTo(pose: ParkourPose, move: ParkourMove, ms: number, frac: number, each?: () => void): void {
+  pose.start(move, ms);
+  for (let t = 0; t < ms * frac; t += 1000 / 60) { pose.update(1 / 60); each?.(); }
+}
+
+describe.each(RIGS)("parkour V2 pose on %s", (id) => {
+  it("THE VAULT: hands reach forward for the top, then hips and knees draw up with the body banked over the planted hand", () => {
+    const h = holder(id);
+    const rest = { bend0: bendOf(h.rig, 0), bend1: bendOf(h.rig, 1) };
+    playTo(h.pose, "vault", 650, 0.16);
+    expect(turned(h, h.rig.arms[0])).toBeGreaterThan(0.6); // both arms swing forward to the top
+    expect(turned(h, h.rig.arms[1])).toBeGreaterThan(0.6);
+    playTo(h.pose, "vault", 650, 0.4);
+    expect(bendOf(h.rig, 0) - rest.bend0).toBeGreaterThan(1.0);
+    expect(bendOf(h.rig, 1) - rest.bend1).toBeGreaterThan(1.0);
+    expect(bendOf(h.rig, 0)).toBeLessThan(2.45);
+    expect(turnOf(h.pose)).toBeGreaterThan(0.3); // banked (and pitched) about the hips
+  });
+
+  it("THE VAULT LANDS under control: the hips come down over planted feet, then the clip's pose is back exactly", () => {
+    const h = holder(id);
+    const restHip = wp(hips(h.rig)).y, restFoot = lowestFoot(h.rig);
+    playTo(h.pose, "vault", 650, 0.86);
+    expect(wp(hips(h.rig)).y).toBeLessThan(restHip - H * 0.04);
+    expect(Math.abs(lowestFoot(h.rig) - restFoot)).toBeLessThan(H * 0.02);
+    while (h.pose.active) h.pose.update(1 / 60);
+    expect(restored(h)).toBe(true);
+    expect(turnOf(h.pose)).toBeLessThan(1e-9);
+  });
+
+  it("THE MANTLE: arms reach up to grip, then the elbows bend to pull, then the LEAD knee comes up onto the top", () => {
+    const h = holder(id);
+    playTo(h.pose, "mantle", 850, 0.16);
+    for (const i of [0, 1]) expect(turned(h, h.rig.arms[i])).toBeGreaterThan(1.5); // the reach: shoulders well up
+    playTo(h.pose, "mantle", 850, 0.42);
+    for (const i of [0, 1]) expect(turned(h, h.rig.fores[i])).toBeGreaterThan(1.2); // the pull: elbows bent
+    playTo(h.pose, "mantle", 850, 0.62);
+    expect(bendOf(h.rig, 0) - bendOf(h.rig, 1)).toBeGreaterThan(0.6); // asymmetric: one knee up, one leg trailing
+    while (h.pose.active) h.pose.update(1 / 60);
+    expect(restored(h)).toBe(true);
+  });
+
+  it("a late start picks the move up part-way through; durations stay in their bounds; never a NaN", () => {
+    const h = holder(id);
+    h.pose.start("mantle", 850, 600);
+    let ms = 0;
+    while (h.pose.active && ms < 3000) { h.pose.update(1 / 60); ms += 1000 / 60; }
+    expect(ms).toBeLessThan(300);
+    for (const move of ["vault", "mantle"] as const) {
+      h.pose.start(move, 99999);
+      ms = 0;
+      while (h.pose.active && ms < 3000) {
+        h.pose.update(1 / 60);
+        ms += 1000 / 60;
+        for (const b of h.rig.bones) expect(Number.isFinite(b.quaternion.w)).toBe(true);
+        expect(Number.isFinite(h.pose.node.position.y)).toBe(true);
+      }
+      expect(ms).toBeLessThan(1220);
+    }
+  });
+});

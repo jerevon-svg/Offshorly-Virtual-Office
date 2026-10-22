@@ -112,6 +112,29 @@ async def test_a_double_jump_right_after_its_jump_is_not_swallowed_by_the_jump_f
     await b.disconnect()
 
 
+async def test_vault_and_mantle_relay_duration_and_bounded_heights_only(server):
+    # PARKOUR V2 — two more kinds on the same event: a duration and the heights relative to the start, bounded; no
+    # position ever travels here (the traversal's line is the walk published with it)
+    a = await _connect(server, "a@example.com")
+    got: list = []
+    b = await _connect(server, "b@example.com", {"peer_parkour": lambda d: got.append(d)})
+    await asyncio.sleep(0.2)
+    await a.emit("parkour", {"kind": "vault", "seq": 7, "ms": 640, "rise": 0, "apex": 25, "x": 1, "to": {"x": 9}})
+    await a.emit("parkour", {"kind": "mantle", "seq": 8, "ms": 900, "rise": 24.5, "apex": 24.5})
+    assert await _wait(lambda: len(got) == 2)
+    assert got[0] == {"email": "a@example.com", "at": got[0]["at"], "kind": "vault", "seq": 7, "ms": 640, "rise": 0.0, "apex": 25.0}
+    assert got[1]["kind"] == "mantle" and got[1]["rise"] == 24.5 and got[1]["ms"] == 900
+    await asyncio.sleep(0.35)
+    # out of range, wrong types: simply absent; a double never carries heights
+    await a.emit("parkour", {"kind": "mantle", "seq": 9, "ms": 900, "rise": 400, "apex": True})
+    await a.emit("parkour", {"kind": "double", "seq": 10, "rise": 5, "apex": 5})
+    assert await _wait(lambda: len(got) == 4)
+    assert set(got[2]) == {"email", "at", "kind", "seq", "ms"}
+    assert set(got[3]) == {"email", "at", "kind", "seq"}
+    await a.disconnect()
+    await b.disconnect()
+
+
 async def test_feet_is_relayed_and_reaches_a_late_joiner_but_is_never_persisted(server):
     a = await _connect(server, "a@example.com")
     started: list = []
